@@ -67,6 +67,8 @@ void statsTick() {
     float sec = (now - stLast) / 1000.f;
     vrlog::write("xr: stats %.0fs: game %.0f fps, to headset %.0f fps (with image %u), endFrame errors %u (last %d), acquire fail %u, blit fail %u, bad pose %u, shouldRender=0 %u, slowest frame %llu ms",
         sec, st.presents / sec, st.submitted / sec, st.layered, st.endFail, st.lastErr, st.acqFail, st.blitFail, st.badPose, st.noRender, st.maxMs);
+    const auto& q = lastHead.orientation; const auto& t = lastHead.position;
+    vrlog::write("xr: layer pose q(%.2f %.2f %.2f %.2f) p(%.2f %.2f %.2f) half-fov %.1f deg, cam history %d", q.x, q.y, q.z, q.w, t.x, t.y, t.z, atanf(g_tanHalf) * 57.29578f, camCount);
     st = Stats{}; stLast = now;
 }
 bool poseOk(const XrPosef& p) { const auto& q = p.orientation; float n = q.x*q.x + q.y*q.y + q.z*q.z + q.w*q.w; return n > 0.9f && n < 1.1f; }
@@ -327,7 +329,18 @@ void onPresent(ID3D11DeviceContext* ctx, ID3D11Texture2D* bb) {
         if (wr == XR_SUCCESS) {
             float aspect = (float)vcv[target].recommendedImageRectWidth / (float)vcv[target].recommendedImageRectHeight;
             bool srgb = scFormat == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB || scFormat == DXGI_FORMAT_B8G8R8A8_UNORM_SRGB;   // GTA's image is already gamma-encoded
-            bool drawn = blit::draw(ctx, bb, scImg[target][idx].texture, (DXGI_FORMAT)scFormat, srgb, aspect, g_test, target == 0 || g_stereo);
+            bool drawn;
+            if (g_test) {
+                // F10: the simplest possible write - clear the eye image to a solid colour, no shader, no state swap.
+                // Left eye magenta, right eye green. If even this does not show, SteamVR is not displaying our layer at all.
+                ID3D11Device* d = nullptr; scImg[target][idx].texture->GetDevice(&d);
+                D3D11_RENDER_TARGET_VIEW_DESC rv{}; rv.Format = (DXGI_FORMAT)scFormat; rv.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2D;
+                ID3D11RenderTargetView* rtv = nullptr;
+                drawn = d && SUCCEEDED(d->CreateRenderTargetView(scImg[target][idx].texture, &rv, &rtv));
+                if (drawn) { const float c[2][4] = {{1, 0, 1, 1}, {0, 1, 0, 1}}; ctx->ClearRenderTargetView(rtv, c[target]); rtv->Release(); }
+                else if (frameNo % 120 == 0) vrlog::write("xr: F10 clear: CreateRenderTargetView failed (format %d)", (int)scFormat);
+                if (d) d->Release();
+            } else drawn = blit::draw(ctx, bb, scImg[target][idx].texture, (DXGI_FORMAT)scFormat, srgb, aspect, false, target == 0 || g_stereo);
             if (!drawn) { ++st.blitFail; if (frameNo < 5) vrlog::write("xr: blit failed for eye %d", target); }
             ctx->Flush();   // hand the eye image to the GPU now: SteamVR's compositor reads it from another process
             XrSwapchainImageReleaseInfo ri{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO}; xrReleaseSwapchainImage(sc[target], &ri);
@@ -422,5 +435,5 @@ void reportCameraPose(const XrPoseF3& u) {
     if (camCount == 8) { for (int i = 1; i < 8; ++i) camHist[i-1] = camHist[i]; camCount = 7; }
     camHist[camCount++] = p;
 }
-void toggleTestPattern() { g_test = !g_test; vrlog::write("F10: test pattern %s", g_test ? "ON (headset should show a colour gradient)" : "off"); }
+void toggleTestPattern() { g_test = !g_test; vrlog::write("F10: test colour %s", g_test ? "ON (headset should show magenta left eye / green right eye)" : "off"); }
 }
