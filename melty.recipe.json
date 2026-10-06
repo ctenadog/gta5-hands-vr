@@ -1,0 +1,14 @@
+{
+ "schemaVersion": 1,
+ "mode": "installed",
+ "games": [{"slug": "gta-v", "role": "primary", "version": "1.0.3889.0"}],
+ "components": [{"id": "main", "fileName": "GTA5VR-0.2.0.zip", "label": "Main files", "kind": "main", "required": true}],
+ "requirements": [{"kind": "loader", "id": "ultimate-asi-loader"}],
+ "mappings": [
+  {"component": "main", "from": "GTA5VR.asi", "to": "{game}"},
+  {"component": "main", "from": "openxr_loader.dll", "to": "{game}"},
+  {"component": "main", "from": "GTA5VR-README.txt", "to": "{game}/GTA5VR"},
+  {"component": "main", "from": "licenses/", "to": "{game}/GTA5VR/licenses"}
+ ],
+ "launch": {"kind": "game"}
+}

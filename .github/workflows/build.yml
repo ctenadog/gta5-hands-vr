@@ -1,0 +1,26 @@
+name: build
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install mingw-w64
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq mingw-w64 zip unzip
+      - name: Build
+        run: sh ci/build.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: GTA5VR
+          path: build/pkg/
+      - name: Publish release "latest"
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete latest -y --cleanup-tag || true
+          gh release create latest build/GTA5VR-*.zip --title "GTA V Hands VR (latest DEV build)" --notes "Auto-built from main. Untested in game. Download the zip, unpack, run install.bat." --prerelease
