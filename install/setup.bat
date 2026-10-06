@@ -9,7 +9,7 @@ pause
 exit /b
 #PSSTART
 # GTA V Hands VR - установка одним скриптом.
-# 1) находит GTA V, 2) скачивает мод (GTA5VR-*.zip) и Script Hook V, 3) удаляет старые файлы мода, 4) копирует всё в папку игры.
+# 1) находит GTA V, 2) скачивает мод (GTA5VR-*.zip) и Script Hook V, 3) копирует всё в папку игры.
 # Если сайт не даёт скачать автоматически - открывает страницу в браузере и ждёт файл в "Загрузках".
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
@@ -89,23 +89,23 @@ function Wait-Download($pattern, $what, $url) {
 function Remove-OldMod {
   Step 'Удаляю старые файлы мода'
   $script:n = 0
-  function Del($p) { if (Test-Path -LiteralPath $p) { Remove-Item -LiteralPath $p -Recurse -Force -ErrorAction SilentlyContinue; if (-not (Test-Path -LiteralPath $p)) { Say "  удалено: $p"; $script:n++ } else { Say "  НЕ удалось удалить (игра запущена?): $p" } } }
+  function Remove-Old($p) { if (Test-Path -LiteralPath $p) { Remove-Item -LiteralPath $p -Recurse -Force -ErrorAction SilentlyContinue; if (-not (Test-Path -LiteralPath $p)) { Say "  удалено: $p"; $script:n++ } else { Say "  НЕ удалось удалить (игра запущена?): $p" } } }
   # сам мод (в корне и в папках, откуда ASI-загрузчики тоже грузят .asi - иначе мод загрузится дважды)
-  foreach ($d in $game, (Join-Path $game 'scripts'), (Join-Path $game 'plugins'), (Join-Path $game 'asi')) { Del (Join-Path $d 'GTA5VR.asi') }
-  Del (Join-Path $game 'openxr_loader.dll')
-  Del (Join-Path $game 'GTA5VR')
+  foreach ($d in $game, (Join-Path $game 'scripts'), (Join-Path $game 'plugins'), (Join-Path $game 'asi')) { Remove-Old (Join-Path $d 'GTA5VR.asi') }
+  Remove-Old (Join-Path $game 'openxr_loader.dll')
+  Remove-Old (Join-Path $game 'GTA5VR')
   # старый лог сохраняем под другим именем, чтобы новый был чистым
   $log = Join-Path $game 'GTA5VR.log'
   if (Test-Path -LiteralPath $log) { Move-Item -LiteralPath $log (Join-Path $game 'GTA5VR.old.log') -Force; Say '  старый лог -> GTA5VR.old.log' }
   # файлы из архива, если его когда-то распаковали прямо в папку игры
-  foreach ($f in 'GTA5VR-README.txt','README_RU.txt','install.bat','install.ps1') { Del (Join-Path $game $f) }
+  foreach ($f in 'GTA5VR-README.txt','README_RU.txt','install.bat','install.ps1') { Remove-Old (Join-Path $game $f) }
   $lic = Join-Path $game 'licenses'
-  if ((Test-Path (Join-Path $lic 'OpenXR-Loader-LICENSE.txt')) -and ((Get-ChildItem $lic -Force | Measure-Object).Count -eq 1)) { Del $lic }
-  if ($here -ne $game) { Del (Join-Path $game 'setup.bat') }
+  if ((Test-Path (Join-Path $lic 'OpenXR-Loader-LICENSE.txt')) -and ((Get-ChildItem $lic -Force | Measure-Object).Count -eq 1)) { Remove-Old $lic }
+  if ($here -ne $game) { Remove-Old (Join-Path $game 'setup.bat') }
   # исходный код (Code -> Download ZIP), распакованный в папку игры
   foreach ($src in (Get-ChildItem $game -Directory -Filter 'gta5-hands-vr*' -ErrorAction SilentlyContinue)) {
     if ($here -and $here.StartsWith($src.FullName)) { Say "  $($src.Name): скрипт запущен из неё - удалите её вручную после установки" }
-    else { Del $src.FullName }
+    else { Remove-Old $src.FullName }
   }
   if ($script:n -eq 0) { Say '  старых файлов нет' }
 }
