@@ -17,7 +17,6 @@ bool g_onlineBlocked = false;
 float g_yawRef = 0.f; bool g_yawRefSet = false;   // head yaw at F8/F9 = "straight ahead"
 int g_gen = 0;
 const float kDeadzone = 0.25f;
-const float kEyeForward = 0.10f;   // eyes are ~10 cm in front of the body axis (camera inside the hidden head)
 
 struct V { float x, y, z; };
 V qrot(const XrPoseF3& q, V v) {   // rotate v by quaternion q
@@ -59,16 +58,6 @@ float frameYaw(int ped, const VrState& s) {
     } else if (g_veh) { g_veh = 0; vrlog::write("camera: on foot, view world-locked"); }
     return g_baseYaw - g_yawRef;   // rotation applied to every OpenXR vector
 }
-// Stable eye anchor: the character's root + eye height (+ limited room-scale offset). The head bone bobs with the
-// walk animation, and anchoring the camera to it made the view and the arms shake.
-V eyeAnchor(int ped, const VrState& s, float yaw) {
-    Vector3 r = natives::invokeV3(N_GET_ENTITY_COORDS, ped, 1);
-    V off = xrToGta(sub(xrPos(s.head), g_headRef), yaw);
-    float l = sqrtf(off.x*off.x + off.y*off.y); if (l > 0.4f) { off.x *= 0.4f / l; off.y *= 0.4f / l; }
-    off.z = fmaxf(-0.6f, fminf(0.3f, off.z));
-    return {r.x + off.x, r.y + off.y, r.z + kEyeHeight + off.z};
-}
-
 // systems.online_guard
 bool onlineGuard() {
     bool online = natives::invoke<int>(N_NETWORK_IS_SESSION_STARTED) != 0;
@@ -77,40 +66,91 @@ bool onlineGuard() {
     return !online;
 }
 
+// 0.4.5 camera settings (GTA5VR.ini [vr]): eye_up / eye_forward in cm above / in front of the neck bone,
+// head_smooth = how much of the neck movement follows per frame in % (lower = calmer, more lag), car_hard_attach.
+float g_eyeUp = 0.12f, g_eyeFwd = 0.12f, g_smooth = 0.25f; bool g_carHard = true; bool g_camIniRead = false;
+void readCamIni() {
+    if (g_camIniRead) return; g_camIniRead = true;
+    char m[MAX_PATH]; GetModuleFileNameA(nullptr, m, MAX_PATH); std::string d = m; d = d.substr(0, d.find_last_of("\\/") + 1) + "GTA5VR.ini";
+    auto def = [&](const char* k, const char* v) { if (GetPrivateProfileIntA("vr", k, -12345, d.c_str()) == -12345) WritePrivateProfileStringA("vr", k, v, d.c_str()); };
+    def("eye_up", "12"); def("eye_forward", "12"); def("head_smooth", "25"); def("car_hard_attach", "1");
+    g_eyeUp  = (int)GetPrivateProfileIntA("vr", "eye_up", 12, d.c_str()) / 100.f;
+    g_eyeFwd = (int)GetPrivateProfileIntA("vr", "eye_forward", 12, d.c_str()) / 100.f;
+    int sm = (int)GetPrivateProfileIntA("vr", "head_smooth", 25, d.c_str()); g_smooth = fmaxf(0.02f, fminf(1.f, sm / 100.f));
+    g_carHard = GetPrivateProfileIntA("vr", "car_hard_attach", 1, d.c_str()) != 0;
+    vrlog::write("camera: GTA5VR.ini eye_up=%.0f cm eye_forward=%.0f cm head_smooth=%.0f%% car_hard_attach=%d", g_eyeUp*100, g_eyeFwd*100, g_smooth*100, g_carHard ? 1 : 0);
+}
+// world -> ped-local (x right, y forward) for a horizontal vector, ped heading in degrees
+V toLocal(V w, float hDeg) { float h = hDeg * 0.0174533f, c = cosf(h), s = sinf(h); return { w.x*c + w.y*s, -w.x*s + w.y*c, w.z }; }
+V toWorld(V l, float hDeg) { float h = hDeg * 0.0174533f, c = cosf(h), s = sinf(h); return { l.x*c - l.y*s, l.x*s + l.y*c, l.z }; }
+// Neck position in the character's own space, smoothed. 0.4.4 used root + fixed 0.65 m: the camera ended up beside /
+// behind / under the real head (seated in cars especially) and the face was in view. The neck bone is used (not the
+// head bone) because the head bones are collapsed by the head hiding.
+int g_neckPed = 0, g_neckIdx = -1; V g_neckSm{0,0,0}; bool g_neckSet = false; int g_camMode = 0; ULONGLONG g_camDbg = 0;
+V neckLocal(int ped) {
+    if (ped != g_neckPed) { g_neckPed = ped; g_neckIdx = natives::invoke<int>(N_GET_PED_BONE_INDEX, ped, 39317 /*SKEL_Neck_1*/); g_neckSet = false; }
+    V cur{0.f, 0.02f, 0.55f};   // fallback if the bone is missing
+    if (g_neckIdx >= 0) {
+        Vector3 w = natives::invokeV3(N_GET_WORLD_POSITION_OF_ENTITY_BONE, ped, g_neckIdx);
+        Vector3 l = natives::invokeV3(N_GET_OFFSET_FROM_ENTITY_GIVEN_WORLD_COORDS, ped, w.x, w.y, w.z);
+        if (fabsf(l.x) < 1.5f && fabsf(l.y) < 1.5f && fabsf(l.z) < 2.f) cur = {l.x, l.y, l.z};
+    }
+    if (!g_neckSet) { g_neckSm = cur; g_neckSet = true; }
+    else { g_neckSm.x += (cur.x - g_neckSm.x) * g_smooth; g_neckSm.y += (cur.y - g_neckSm.y) * g_smooth; g_neckSm.z += (cur.z - g_neckSm.z) * g_smooth; }
+    return g_neckSm;
+}
+
 // systems.head_camera: scripted camera = the headset. Mono: head centre, same image to both eyes. Stereo: this frame's eye.
-void headCamera(int ped, const VrState& s, float yaw, V anchor) {
-    // The game camera gets only yaw + pitch (roll 0: GTA's roll sign is unverified and a wrong sign tilted the world).
-    // The exact roll-free pose is reported to the compositor, which applies head tilt and latency correction itself.
+// Returns the eye position in world space (anchor for arms and aiming).
+V headCamera(int ped, const VrState& s, float yaw, bool inVehicle) {
+    readCamIni();
     XrPoseF3 e = xr::removeRoll(s.stereo ? s.eye[s.renderEye] : s.head);
-    V pos = s.stereo ? add(anchor, xrToGta(sub(xrPos(e), xrPos(s.head)), yaw)) : anchor;
     V gf = xrToGta(qrot(e, {0,0,-1}), yaw);
     float camYaw = atan2f(-gf.x, gf.y) * 57.29578f;
     float pitch = asinf(fmaxf(-1.f, fminf(1.f, gf.z))) * 57.29578f;
     float roll = 0.f;
     xr::reportCameraPose(e);
     float fov = fmaxf(30.f, fminf(120.f, s.fovDeg));
-    // eyes sit a little in front of the body axis
-    { float h = camYaw * 0.0174533f; pos.x += -sinf(h) * kEyeForward; pos.y += cosf(h) * kEyeForward; }
+    float pedH = natives::invoke<float>(N_GET_ENTITY_HEADING, ped);
+    // room-scale: real head movement since recenter (limited), plus the stereo eye offset
+    V off = xrToGta(sub(xrPos(s.head), g_headRef), yaw);
+    float l = sqrtf(off.x*off.x + off.y*off.y); if (l > 0.4f) { off.x *= 0.4f / l; off.y *= 0.4f / l; }
+    off.z = fmaxf(-0.6f, fminf(0.3f, off.z));
+    if (s.stereo) off = add(off, xrToGta(sub(xrPos(e), xrPos(s.head)), yaw));
+    float h = camYaw * 0.0174533f;
+    V fwd{-sinf(h) * g_eyeFwd, cosf(h) * g_eyeFwd, 0.f};
+    V lo = add(add(neckLocal(ped), V{0.f, 0.f, g_eyeUp}), toLocal(add(off, fwd), pedH));
     if (!g_cam) {
-        g_cam = natives::invoke<int>(N_CREATE_CAM_WITH_PARAMS, "DEFAULT_SCRIPTED_CAMERA", pos.x, pos.y, pos.z, pitch, roll, camYaw, fov, 1, 2);
+        Vector3 r = natives::invokeV3(N_GET_ENTITY_COORDS, ped, 1);
+        V p = add(V{r.x, r.y, r.z}, toWorld(lo, pedH));
+        g_cam = natives::invoke<int>(N_CREATE_CAM_WITH_PARAMS, "DEFAULT_SCRIPTED_CAMERA", p.x, p.y, p.z, pitch, roll, camYaw, fov, 1, 2);
         natives::invoke(N_SET_CAM_ACTIVE, g_cam, 1);
         natives::invoke(N_RENDER_SCRIPT_CAMS, 1, 0, 0, 1, 0, 0);
         natives::invoke(N_SET_CAM_NEAR_CLIP, g_cam, 0.05f);
-        vrlog::write("camera: created, attached to the character");
+        g_camMode = 0;
+        vrlog::write("camera: created, attached to the character's neck (bone index %d)", g_neckIdx);
     }
-    // 0.4.4: the camera is ATTACHED to the character (offset in the character's own space) instead of being moved to
-    // GET_ENTITY_COORDS every frame. Scripts run before the game moves the character, so the old way put the camera
-    // where the character was one frame ago: shaking when walking, falling behind in a car. Attached, the engine
-    // places it after the move, in the same frame.
-    Vector3 lo = natives::invokeV3(N_GET_OFFSET_FROM_ENTITY_GIVEN_WORLD_COORDS, ped, pos.x, pos.y, pos.z);
-    natives::invoke(N_ATTACH_CAM_TO_ENTITY, g_cam, ped, lo.x, lo.y, lo.z, 1);
-    natives::invoke(N_SET_CAM_ROT, g_cam, pitch, roll, camYaw, 2);
+    // The offset is given in the character's own space and the engine places the camera AFTER moving the character.
+    // In a vehicle (0.4.5) the rotation is attached too (HARD_ATTACH, relative to the character, who sits in the car):
+    // 0.4.4 set a world rotation from the car heading read BEFORE the car moved, one frame late -> shaking in turns.
+    int mode = (inVehicle && g_carHard) ? 2 : 1;
+    if (mode != g_camMode) { natives::invoke(N_DETACH_CAM, g_cam); g_camMode = mode; }
+    if (mode == 2) {
+        float rel = camYaw - pedH; while (rel > 180.f) rel -= 360.f; while (rel < -180.f) rel += 360.f;
+        natives::invoke(N_HARD_ATTACH_CAM_TO_ENTITY, g_cam, ped, pitch, 0.f, rel, lo.x, lo.y, lo.z, 1);
+    } else {
+        natives::invoke(N_ATTACH_CAM_TO_ENTITY, g_cam, ped, lo.x, lo.y, lo.z, 1);
+        natives::invoke(N_SET_CAM_ROT, g_cam, pitch, roll, camYaw, 2);
+    }
     natives::invoke(N_SET_CAM_FOV, g_cam, fov);
+    ULONGLONG now = GetTickCount64();
+    if (now - g_camDbg > 10000) { g_camDbg = now; vrlog::write("camera: %s, neck (%.2f %.2f %.2f), camera offset (%.2f %.2f %.2f) in character space", mode == 2 ? "vehicle (hard attach)" : "on foot", g_neckSm.x, g_neckSm.y, g_neckSm.z, lo.x, lo.y, lo.z); }
     // GTA moves the character relative to the (hidden) gameplay camera: point it where the head looks,
     // so "stick forward" = walk where you look
-    float pedH = natives::invoke<float>(N_GET_ENTITY_HEADING, ped);
     float rel = camYaw - pedH; while (rel > 180.f) rel -= 360.f; while (rel < -180.f) rel += 360.f;
     natives::invoke(N_SET_GAMEPLAY_CAM_RELATIVE_HEADING, rel);
+    Vector3 r = natives::invokeV3(N_GET_ENTITY_COORDS, ped, 1);
+    return add(V{r.x, r.y, r.z}, toWorld(lo, pedH));
 }
 
 // systems.arm_follow: one IK target per row of sheets/arms.json, in the same world-locked frame as the camera
@@ -209,6 +249,7 @@ void showHead() { hands::setHideHead(false); restoreProps(); }
 
 void releaseCamera() {
     showHead();
+    g_neckPed = 0; g_camMode = 0;
     if (g_cam) { natives::invoke(N_DETACH_CAM, g_cam); natives::invoke(N_RENDER_SCRIPT_CAMS, 0, 0, 0, 1, 0, 0); natives::invoke(N_SET_CAM_ACTIVE, g_cam, 0); natives::invoke(N_DESTROY_CAM, g_cam, 0); g_cam = 0; }
 }
 }
@@ -232,8 +273,7 @@ void tick() {
     bool inVehicle = natives::invoke<int>(N_IS_PED_IN_ANY_VEHICLE, ped, 0) != 0;
     snapTurn(s);
     float yaw = frameYaw(ped, s);
-    V anchor = eyeAnchor(ped, s, yaw);
-    headCamera(ped, s, yaw, anchor);
+    V anchor = headCamera(ped, s, yaw, inVehicle);
     armFollow(ped, s, inVehicle, yaw, anchor);
     { const XrPoseF3* g[2] = {&s.pose[IN_LEFT_GRIP_POSE], &s.pose[IN_RIGHT_GRIP_POSE]}; hands::tick(ped, g, yaw); }
     hideHead(ped);
