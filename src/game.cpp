@@ -11,7 +11,9 @@ namespace {
 int  g_cam = 0;
 bool g_enabled = false;   // VR starts OFF: press F8 in story mode
 bool g_onlineBlocked = false;
-float g_yawRef = 0.f; bool g_yawRefSet = false;
+float g_yawRef = 0.f; bool g_yawRefSet = false;   // head yaw at F8/F9 = "straight ahead"
+int g_gen = 0;
+const float kDeadzone = 0.25f;
 
 struct V { float x, y, z; };
 V qrot(const XrPoseF3& q, V v) {   // rotate v by quaternion q
@@ -32,6 +34,13 @@ V sub(V a, V b) { return {a.x-b.x, a.y-b.y, a.z-b.z}; }
 float len(V a) { return sqrtf(a.x*a.x + a.y*a.y + a.z*a.z); }
 V boneCoords(int ped, int bone) { Vector3 r = natives::invokeV3(N_GET_PED_BONE_COORDS, ped, bone, 0.f, 0.f, 0.f); return {r.x, r.y, r.z}; }
 
+float headYawGta(const XrPoseF3& h) { V f = qrot(h, {0,0,-1}); V g = xrToGta(f, 0.f); return atan2f(-g.x, g.y) * 57.29578f; }
+// ped heading minus the head yaw at recenter: looking "straight ahead" in the headset = where the character faces
+float baseHeading(int ped, const VrState& s) {
+    if (!g_yawRefSet && s.head.valid) { g_yawRef = headYawGta(s.head); g_yawRefSet = true; vrlog::write("recentered (head yaw %.1f)", g_yawRef); }
+    return natives::invoke<float>(N_GET_ENTITY_HEADING, ped) - g_yawRef;
+}
+
 // systems.online_guard
 bool onlineGuard() {
     bool online = natives::invoke<int>(N_NETWORK_IS_SESSION_STARTED) != 0;
@@ -42,9 +51,8 @@ bool onlineGuard() {
 
 // systems.head_camera: scripted camera at the head bone, rotated by the eye this frame renders.
 void headCamera(int ped, const VrState& s) {
-    float heading = natives::invoke<float>(N_GET_ENTITY_HEADING, ped);
+    float heading = baseHeading(ped, s);
     const XrPoseF3& e = s.eye[s.renderEye];
-    if (!g_yawRefSet && s.head.valid) { g_yawRef = 0.f; g_yawRefSet = true; }
     V head = boneCoords(ped, kHeadBone);
     V eyeOff = xrToGta(sub(xrPos(e), xrPos(s.head)), heading);   // IPD offset only; body stays where GTA puts it
     V pos = add(head, eyeOff);
@@ -66,7 +74,7 @@ void headCamera(int ped, const VrState& s) {
 
 // systems.arm_follow: one IK target per row of sheets/arms.json
 void armFollow(int ped, const VrState& s, bool inVehicle) {
-    float heading = natives::invoke<float>(N_GET_ENTITY_HEADING, ped);
+    float heading = baseHeading(ped, s);
     V head = boneCoords(ped, kHeadBone);
     for (const ArmRow& a : kArms) {
         if (inVehicle && !a.inVehicle) continue;
@@ -84,7 +92,7 @@ void weaponAim(int ped, const VrState& s, bool inVehicle) {
     if (inVehicle) return;
     const XrPoseF3& p = s.pose[IN_RIGHT_AIM_POSE];
     if (!p.valid || s.value[IN_FIRE] < kTrigger) return;
-    float heading = natives::invoke<float>(N_GET_ENTITY_HEADING, ped);
+    float heading = baseHeading(ped, s);
     V head = boneCoords(ped, kHeadBone);
     V origin = add(head, xrToGta(sub(xrPos(p), xrPos(s.head)), heading));
     V dir = xrToGta(qrot(p, {0,0,-1}), heading);
@@ -101,24 +109,30 @@ void controllerInput(const VrState& s, bool inVehicle) {
         int ctl = inVehicle ? r.controlVehicle : r.control;
         if (ctl < 0) continue;
         float v = s.value[i];
-        if (r.type == XrType::Float && (i == IN_MOVE_X || i == IN_MOVE_Y)) v = 0.5f + 0.5f * v * r.axisSign;   // axis: 0..1, 0.5 = centre
-        else if (r.type == XrType::Bool && v < 0.5f) continue;
+        // nothing is sent while a stick is centred / a trigger is released: a constant "centre" value made the character walk in circles
+        if (i == IN_MOVE_X || i == IN_MOVE_Y) { if (fabsf(v) < kDeadzone) continue; v = 0.5f + 0.5f * v * r.axisSign; }
+        else if (r.type == XrType::Float) { if (v < kTrigger) continue; }
+        else if (v < 0.5f) continue;
         natives::invoke<int>(N_SET_CONTROL_VALUE_NEXT_FRAME, 0, ctl, v);
     }
 }
 
 void releaseCamera() {
-    if (g_cam) { natives::invoke(N_RENDER_SCRIPT_CAMS, 0, 0, 0, 1, 0, 0); natives::invoke(N_SET_CAM_ACTIVE, g_cam, 0); g_cam = 0; }
+    if (g_cam) { natives::invoke(N_RENDER_SCRIPT_CAMS, 0, 0, 0, 1, 0, 0); natives::invoke(N_SET_CAM_ACTIVE, g_cam, 0); natives::invoke(N_DESTROY_CAM, g_cam, 0); g_cam = 0; }
 }
 }
 
 namespace game {
-void toggle() { g_enabled = !g_enabled; vrlog::write("F8: VR %s", g_enabled ? "on" : "off"); }
+void toggle() { g_enabled = !g_enabled; if (g_enabled) { ++g_gen; g_yawRefSet = false; } vrlog::write("F8: VR %s", g_enabled ? "on" : "off"); }
+void forceOff() { if (g_enabled) { g_enabled = false; vrlog::write("VR switched off automatically"); } }
+int generation() { return g_gen; }
+void recenter() { g_yawRefSet = false; vrlog::write("F9: recenter"); }
 bool enabled() { return g_enabled; }
 
 void tick() {
     if (!natives::ready()) return;
     if (!onlineGuard() || !g_enabled) { releaseCamera(); return; }
+    if (natives::invoke<int>(N_GET_IS_LOADING_SCREEN_ACTIVE) || natives::invoke<int>(N_IS_PAUSE_MENU_ACTIVE)) { releaseCamera(); return; }
     VrState s = xr::snapshot();
     if (!s.running) { releaseCamera(); return; }
     int ped = natives::invoke<int>(N_PLAYER_PED_ID);

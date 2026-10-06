@@ -16,10 +16,11 @@ struct VrState {
 };
 
 namespace xr {
-bool loadLoader();                                   // openxr_loader.dll next to GTA5.exe
+bool loadLoader();                                   // on F8: picks SteamVR (GTA5VR.ini), loads openxr_loader.dll, creates the instance
 bool startSession(ID3D11Device* dev, DXGI_FORMAT bbFormat); // on the first Present after F8
 void setWanted(bool on);                             // F8 on/off: begin or end the OpenXR session
 bool hasSession();
+bool failed();                                      // hung/broken: game must turn VR off
 void poll();                                         // pump OpenXR events without submitting a frame
 void onPresent(ID3D11DeviceContext* ctx, ID3D11Texture2D* backbuffer); // submits this frame to its eye
 VrState snapshot();                                  // copy for the script thread

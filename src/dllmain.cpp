@@ -17,10 +17,20 @@ bool g_xrOk = false;
 // Nothing VR happens until the player presses F8 in story mode: no OpenXR session in menus or loading screens,
 // so the game is never throttled by the headset before that.
 void onPresent(void* swapChain) {
-    if (!g_xrOk) return;
     bool want = game::enabled();
-    xr::setWanted(want);
-    if (!want) { if (xr::hasSession()) xr::poll(); return; }
+    if (want && xr::failed()) { game::forceOff(); want = false; }
+    if (g_xrOk) xr::setWanted(want);
+    if (!want) { if (g_xrOk && xr::hasSession()) xr::poll(); return; }
+    // OpenXR starts only now (F8), so SteamVR can be started any time before pressing F8
+    if (!g_xrOk) {
+        static int triedGen = -1;
+        if (triedGen == game::generation()) return;
+        triedGen = game::generation();
+        vrlog::write("starting OpenXR...");
+        g_xrOk = xr::loadLoader();
+        if (!g_xrOk) { vrlog::write("VR could not start: start SteamVR, connect the headset, press F8 again"); game::forceOff(); return; }
+        xr::setWanted(true);
+    }
     auto* sw = static_cast<IDXGISwapChain*>(swapChain);
     ID3D11Device* dev = nullptr;
     if (FAILED(sw->GetDevice(__uuidof(ID3D11Device), (void**)&dev))) return;
@@ -29,7 +39,7 @@ void onPresent(void* swapChain) {
     if (!g_sessionTried) {
         g_sessionTried = true;
         D3D11_TEXTURE2D_DESC d; bb->GetDesc(&d);
-        if (!xr::startSession(dev, d.Format)) vrlog::write("VR session could not start - see errors above");
+        if (!xr::startSession(dev, d.Format)) { vrlog::write("VR session could not start - see errors above"); game::forceOff(); }
     }
     ID3D11DeviceContext* ctx = nullptr;
     dev->GetImmediateContext(&ctx);
@@ -39,22 +49,21 @@ void onPresent(void* swapChain) {
 
 // sheet hooks.script_tick: SHV runs this as a game script (natives are legal here)
 void scriptMain() {
-    vrlog::write("script thread started (SHV game version id %d); F8 toggles VR", shv::gameVersion());
+    vrlog::write("script thread started (SHV game version id %d); F8 toggles VR, F9 recenters", shv::gameVersion());
     for (;;) {
         if (GetAsyncKeyState(kToggleVk) & 1) game::toggle();
+        if (GetAsyncKeyState(VK_F9) & 1) game::recenter();
         game::tick();
         shv::wait(0);
     }
 }
 
 DWORD WINAPI boot(LPVOID) {
-    vrlog::write("GTA5VR 0.2.1 loading (Script Hook V build, story mode only)");
+    vrlog::write("GTA5VR 0.2.2 loading (Script Hook V build, story mode only)");
     // SHV may be loaded after us by the ASI loader: retry for ~30 s.
     bool ok = false;
     for (int i = 0; i < 60 && !(ok = natives::init()); ++i) Sleep(500);
     if (!ok) { vrlog::write("VR stays OFF: %s", natives::lastError()); return 0; }
-    g_xrOk = xr::loadLoader();
-    if (!g_xrOk) vrlog::write("no OpenXR runtime/headset: camera mod runs flat (start Pico Connect / SteamVR first)");
     shv::registerPresent(&onPresent);
     shv::registerScript(g_mod, &scriptMain);
     vrlog::write("registered with Script Hook V");

@@ -14,6 +14,8 @@
 #include <openxr/openxr_platform.h>
 #include "xr.h"
 #include "log.h"
+#include <tlhelp32.h>
+#include <string>
 
 namespace {
 HMODULE g_dll = nullptr;
@@ -39,6 +41,7 @@ bool scHasImage[2] = {};
 bool sessionRunning = false;
 bool wantRunning = false;          // F8: VR on. Session is begun only while this is true.
 bool exitRequested = false;
+bool g_fatal = false;            // something hung: F8 must be pressed again
 XrSessionState lastState = XR_SESSION_STATE_UNKNOWN;
 std::mutex mtx; VrState state{};
 uint64_t frameNo = 0;
@@ -95,18 +98,76 @@ void pollEvents() {
 }
 }
 
+namespace {
+std::string regStr(HKEY root, const char* key, const char* val) {
+    char buf[1024]; DWORD n = sizeof(buf);
+    if (RegGetValueA(root, key, val, RRF_RT_REG_SZ | RRF_SUBKEY_WOW6464KEY, nullptr, buf, &n) == ERROR_SUCCESS) return buf;
+    return "";
+}
+bool processRunning(const char* exe) {
+    HANDLE h = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0); if (h == INVALID_HANDLE_VALUE) return false;
+    PROCESSENTRY32 e{sizeof(e)}; bool f = false;
+    for (BOOL ok = Process32First(h, &e); ok; ok = Process32Next(h, &e)) if (_stricmp(e.szExeFile, exe) == 0) { f = true; break; }
+    CloseHandle(h); return f;
+}
+bool fileExists(const std::string& p) { return !p.empty() && GetFileAttributesA(p.c_str()) != INVALID_FILE_ATTRIBUTES; }
+// SteamVR's OpenXR manifest: from the Khronos AvailableRuntimes list, else from Steam's library folders.
+std::string findSteamVrJson() {
+    HKEY k;
+    if (RegOpenKeyExA(HKEY_LOCAL_MACHINE, "SOFTWARE\\Khronos\\OpenXR\\1\\AvailableRuntimes", 0, KEY_READ | KEY_WOW64_64KEY, &k) == ERROR_SUCCESS) {
+        char name[1024]; for (DWORD i = 0;; ++i) { DWORD n = sizeof(name); if (RegEnumValueA(k, i, name, &n, nullptr, nullptr, nullptr, nullptr) != ERROR_SUCCESS) break;
+            std::string v = name; for (auto& c : v) c = (char)tolower(c);
+            if (v.find("steamxr_win64.json") != std::string::npos && fileExists(name)) { RegCloseKey(k); return name; } }
+        RegCloseKey(k);
+    }
+    std::string steam = regStr(HKEY_CURRENT_USER, "Software\\Valve\\Steam", "SteamPath");
+    std::vector<std::string> libs; if (!steam.empty()) libs.push_back(steam);
+    if (FILE* f = fopen((steam + "/steamapps/libraryfolders.vdf").c_str(), "r")) {
+        char line[2048];
+        while (fgets(line, sizeof(line), f)) { const char* q = strstr(line, "\"path\""); if (!q) continue;
+            q = strchr(q + 6, '"'); if (!q) continue; const char* e = strchr(q + 1, '"'); if (!e) continue;
+            std::string p(q + 1, e); std::string o; for (size_t i = 0; i < p.size(); ++i) { if (p[i] == '\\' && i + 1 < p.size() && p[i+1] == '\\') ++i; o += p[i]; }
+            libs.push_back(o); }
+        fclose(f);
+    }
+    for (auto& l : libs) { std::string j = l + "\\steamapps\\common\\SteamVR\\steamxr_win64.json"; if (fileExists(j)) return j; }
+    return "";
+}
+std::string iniPath() { char m[MAX_PATH]; GetModuleFileNameA(nullptr, m, MAX_PATH); std::string s = m; return s.substr(0, s.find_last_of("\\/") + 1) + "GTA5VR.ini"; }
+}
+
 namespace xr {
+// GTA5VR.ini [vr] runtime = steamvr (default) | system.  steamvr: use SteamVR even when Pico Connect / Oculus
+// is the Windows "active OpenXR runtime"; system: whatever runtime Windows has set active.
+void pickRuntime() {
+    std::string ini = iniPath();
+    if (!fileExists(ini)) WritePrivateProfileStringA("vr", "runtime", "steamvr", ini.c_str());
+    char rt[64]; GetPrivateProfileStringA("vr", "runtime", "steamvr", rt, sizeof(rt), ini.c_str());
+    std::string active = regStr(HKEY_LOCAL_MACHINE, "SOFTWARE\\Khronos\\OpenXR\\1", "ActiveRuntime");
+    vrlog::write("xr: Windows active OpenXR runtime: %s", active.empty() ? "(none)" : active.c_str());
+    vrlog::write("xr: GTA5VR.ini runtime=%s; SteamVR running: %s", rt, processRunning("vrserver.exe") ? "yes" : "no");
+    if (_stricmp(rt, "system") == 0) return;
+    std::string j = findSteamVrJson();
+    if (j.empty()) { vrlog::write("xr: SteamVR not found - using the Windows active runtime"); return; }
+    SetEnvironmentVariableA("XR_RUNTIME_JSON", j.c_str());   // read by openxr_loader at xrCreateInstance
+    vrlog::write("xr: using SteamVR: %s", j.c_str());
+}
+
 bool loadLoader() {
-    g_dll = LoadLibraryA("openxr_loader.dll");
+    if (inst) return true;
+    pickRuntime();
+    if (!g_dll) g_dll = LoadLibraryA("openxr_loader.dll");
     if (!g_dll) { vrlog::write("xr: openxr_loader.dll not found next to GTA5.exe"); return false; }
     gpa = (PFN_xrGetInstanceProcAddr)GetProcAddress(g_dll, "xrGetInstanceProcAddr");
     if (!gpa) return false;
     gpa(XR_NULL_HANDLE, "xrCreateInstance", (PFN_xrVoidFunction*)&xrCreateInstance);
     const char* ext[] = {XR_KHR_D3D11_ENABLE_EXTENSION_NAME};
     XrInstanceCreateInfo ci{XR_TYPE_INSTANCE_CREATE_INFO};
-    strcpy(ci.applicationInfo.applicationName, "GTA V VR"); ci.applicationInfo.apiVersion = XR_MAKE_VERSION(1,0,0);
+    strcpy(ci.applicationInfo.applicationName, "Grand Theft Auto V"); strcpy(ci.applicationInfo.engineName, "GTA5VR"); ci.applicationInfo.apiVersion = XR_MAKE_VERSION(1,0,0);
     ci.enabledExtensionCount = 1; ci.enabledExtensionNames = ext;
-    if (!ok(xrCreateInstance(&ci, &inst), "xrCreateInstance (is Pico Connect / SteamVR running?)")) return false;
+    if (!ok(xrCreateInstance(&ci, &inst), "xrCreateInstance (is SteamVR running and the headset connected?)")) { inst = XR_NULL_HANDLE; return false; }
+    { XrInstanceProperties ip{XR_TYPE_INSTANCE_PROPERTIES}; PFN_xrGetInstanceProperties gip = nullptr;
+      gpa(inst, "xrGetInstanceProperties", (PFN_xrVoidFunction*)&gip); if (gip && XR_SUCCEEDED(gip(inst, &ip))) vrlog::write("xr: runtime in use: %s", ip.runtimeName); }
 #define L(n) gpa(inst, #n, (PFN_xrVoidFunction*)&n);
     L(xrGetSystem) L(xrCreateSession) L(xrCreateReferenceSpace) L(xrEnumerateViewConfigurationViews) L(xrCreateSwapchain)
     L(xrEnumerateSwapchainImages) L(xrEnumerateSwapchainFormats) L(xrPollEvent) L(xrBeginSession) L(xrEndSession) L(xrWaitFrame)
@@ -116,7 +177,7 @@ bool loadLoader() {
     L(xrDestroyInstance) L(xrGetD3D11GraphicsRequirementsKHR) L(xrRequestExitSession)
 #undef L
     XrSystemGetInfo gi{XR_TYPE_SYSTEM_GET_INFO}; gi.formFactor = XR_FORM_FACTOR_HEAD_MOUNTED_DISPLAY;
-    if (!ok(xrGetSystem(inst, &gi, &sys), "xrGetSystem (headset connected?)")) return false;
+    if (!ok(xrGetSystem(inst, &gi, &sys), "xrGetSystem (headset connected?)")) { xrDestroyInstance(inst); inst = XR_NULL_HANDLE; return false; }
     vrlog::write("xr: OpenXR instance ready");
     return createActions();
 }
@@ -124,6 +185,13 @@ bool loadLoader() {
 bool startSession(ID3D11Device* dev, DXGI_FORMAT bbFormat) {
     XrGraphicsRequirementsD3D11KHR req{XR_TYPE_GRAPHICS_REQUIREMENTS_D3D11_KHR};
     xrGetD3D11GraphicsRequirementsKHR(inst, sys, &req);   // required call before xrCreateSession
+    { IDXGIDevice* dd = nullptr; IDXGIAdapter* ad = nullptr; DXGI_ADAPTER_DESC d{};
+      if (SUCCEEDED(dev->QueryInterface(__uuidof(IDXGIDevice), (void**)&dd)) && SUCCEEDED(dd->GetAdapter(&ad)) && SUCCEEDED(ad->GetDesc(&d)))
+          vrlog::write("xr: GTA GPU %ls, headset GPU %s", d.Description, memcmp(&d.AdapterLuid, &req.adapterLuid, sizeof(LUID)) == 0 ? "same" : "DIFFERENT (set GTA to the headset GPU)");
+      if (ad) ad->Release();
+      if (dd) dd->Release(); }
+    // the runtime touches GTA's device from its own thread: without this the game can hang
+    { ID3D10Multithread* mt = nullptr; if (SUCCEEDED(dev->QueryInterface(__uuidof(ID3D10Multithread), (void**)&mt))) { mt->SetMultithreadProtected(TRUE); mt->Release(); } }
     XrGraphicsBindingD3D11KHR gb{XR_TYPE_GRAPHICS_BINDING_D3D11_KHR}; gb.device = dev;
     XrSessionCreateInfo si{XR_TYPE_SESSION_CREATE_INFO}; si.next = &gb; si.systemId = sys;
     if (!ok(xrCreateSession(inst, &si, &sess), "xrCreateSession (GPU must match the headset's adapter)")) return false;
@@ -159,18 +227,25 @@ bool startSession(ID3D11Device* dev, DXGI_FORMAT bbFormat) {
 }
 
 void setWanted(bool on) {
+    if (on && !wantRunning) g_fatal = false;
     wantRunning = on;
     if (!sess) return;
     if (!on && sessionRunning && !exitRequested) { exitRequested = true; ok(xrRequestExitSession(sess), "xrRequestExitSession"); }
 }
 bool hasSession() { return sess != XR_NULL_HANDLE; }
+bool failed() { return g_fatal; }
 void poll() { pollEvents(); }
 
 void onPresent(ID3D11DeviceContext* ctx, ID3D11Texture2D* bb) {
     pollEvents();
     if (!sessionRunning) { std::lock_guard<std::mutex> l(mtx); state.running = false; return; }
     XrFrameState fs{XR_TYPE_FRAME_STATE}; XrFrameWaitInfo wi{XR_TYPE_FRAME_WAIT_INFO};
-    if (XR_FAILED(xrWaitFrame(sess, &wi, &fs))) return;
+    if (g_fatal) { std::lock_guard<std::mutex> l(mtx); state.running = false; return; }
+    ULONGLONG t0 = GetTickCount64();
+    XrResult wfr = xrWaitFrame(sess, &wi, &fs);
+    ULONGLONG tw = GetTickCount64() - t0;
+    if (frameNo < 5 || tw > 500) vrlog::write("xr: frame %llu xrWaitFrame %d took %llu ms", (unsigned long long)frameNo, (int)wfr, tw);
+    if (XR_FAILED(wfr)) return;
     XrFrameBeginInfo bi{XR_TYPE_FRAME_BEGIN_INFO}; xrBeginFrame(sess, &bi);
 
     int eye;
@@ -178,13 +253,16 @@ void onPresent(ID3D11DeviceContext* ctx, ID3D11Texture2D* bb) {
     // copy this frame into its eye
     uint32_t idx; XrSwapchainImageAcquireInfo ai{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
     if (XR_SUCCEEDED(xrAcquireSwapchainImage(sc[eye], &ai, &idx))) {
-        XrSwapchainImageWaitInfo w{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO}; w.timeout = 100000000;   // 100 ms, never hang the game
-        xrWaitSwapchainImage(sc[eye], &w);
+        XrSwapchainImageWaitInfo w{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO}; w.timeout = 100000000;   // 100 ms
+        XrResult wr = XR_TIMEOUT_EXPIRED;
+        for (int t = 0; t < 10 && wr == XR_TIMEOUT_EXPIRED; ++t) wr = xrWaitSwapchainImage(sc[eye], &w);   // must succeed before release
+        if (wr != XR_SUCCESS) { vrlog::write("xr: swapchain image never became ready (%d) - VR switched off", (int)wr); g_fatal = true; }
         D3D11_TEXTURE2D_DESC sd; bb->GetDesc(&sd);
         D3D11_BOX box{0,0,0, (UINT)std::min<uint32_t>(sd.Width, vcv[eye].recommendedImageRectWidth), (UINT)std::min<uint32_t>(sd.Height, vcv[eye].recommendedImageRectHeight), 1};
-        ctx->CopySubresourceRegion(scImg[eye][idx].texture, 0, 0, 0, 0, bb, 0, &box);   // TODO verify: backbuffer format/size vs swapchain
-        XrSwapchainImageReleaseInfo ri{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO}; xrReleaseSwapchainImage(sc[eye], &ri);
-        scHasImage[eye] = true;
+        if (wr == XR_SUCCESS) {
+            ctx->CopySubresourceRegion(scImg[eye][idx].texture, 0, 0, 0, 0, bb, 0, &box);   // TODO verify: backbuffer format/size vs swapchain
+            XrSwapchainImageReleaseInfo ri{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO}; xrReleaseSwapchainImage(sc[eye], &ri); scHasImage[eye] = true;
+        }
     }
 
     // locate head, eyes and controllers for the next frame
@@ -227,7 +305,10 @@ void onPresent(ID3D11DeviceContext* ctx, ID3D11Texture2D* bb) {
     XrFrameEndInfo ei{XR_TYPE_FRAME_END_INFO}; ei.displayTime = fs.predictedDisplayTime; ei.environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
     bool both = scHasImage[0] && scHasImage[1];
     ei.layerCount = (both && fs.shouldRender) ? 1 : 0; ei.layers = layers;
-    xrEndFrame(sess, &ei);
+    XrResult er = xrEndFrame(sess, &ei);
+    if (XR_FAILED(er) && (frameNo < 5 || frameNo % 300 == 0)) vrlog::write("xr: xrEndFrame failed (%d)", (int)er);
+    if (frameNo < 5) vrlog::write("xr: frame %llu submitted (eye %d, layers %u, shouldRender %d)", (unsigned long long)frameNo, eye, ei.layerCount, (int)fs.shouldRender);
+    if (GetTickCount64() - t0 > 3000) { vrlog::write("xr: one frame took over 3 s - VR switched off to keep the game alive"); g_fatal = true; }
 
     s.renderEye = eye ^ 1; s.running = true; ++frameNo;
     std::lock_guard<std::mutex> l(mtx); state = s;

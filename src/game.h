@@ -1,2 +1,2 @@
 #pragma once
-namespace game { void tick(); void toggle(); bool enabled(); }
+namespace game { void toggle(); bool enabled(); void forceOff(); int generation(); void recenter(); void tick(); }
