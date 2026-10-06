@@ -48,6 +48,20 @@ XrSessionState lastState = XR_SESSION_STATE_UNKNOWN;
 std::mutex mtx; VrState state{};
 uint64_t frameNo = 0;
 int64_t scFormat = 0;
+// periodic stats (written to the log every 2 s for the first 30 s, then every 10 s)
+struct Stats { unsigned presents = 0, submitted = 0, layered = 0, endFail = 0, acqFail = 0, blitFail = 0, badPose = 0, noRender = 0, slow = 0; int lastErr = 0; ULONGLONG maxMs = 0; } st;
+ULONGLONG stStart = 0, stLast = 0;
+void statsTick() {
+    ULONGLONG now = GetTickCount64();
+    if (!stStart) { stStart = stLast = now; return; }
+    ULONGLONG every = (now - stStart < 30000) ? 2000 : 10000;
+    if (now - stLast < every) return;
+    float sec = (now - stLast) / 1000.f;
+    vrlog::write("xr: stats %.0fs: game %.0f fps, to headset %.0f fps (with image %u), endFrame errors %u (last %d), acquire fail %u, blit fail %u, bad pose %u, shouldRender=0 %u, slowest frame %llu ms",
+        sec, st.presents / sec, st.submitted / sec, st.layered, st.endFail, st.lastErr, st.acqFail, st.blitFail, st.badPose, st.noRender, st.maxMs);
+    st = Stats{}; stLast = now;
+}
+bool poseOk(const XrPosef& p) { const auto& q = p.orientation; float n = q.x*q.x + q.y*q.y + q.z*q.z + q.w*q.w; return n > 0.9f && n < 1.1f; }
 
 // destroys the session and everything made from it, so the next F8 starts clean
 void destroySession() {
@@ -59,6 +73,8 @@ void destroySession() {
     if (sess) xrDestroySession(sess);
     sess = XR_NULL_HANDLE;
     sessionRunning = false; exitRequested = false; lastState = XR_SESSION_STATE_UNKNOWN; frameNo = 0;
+    for (auto& v : lastView) v = {XR_TYPE_VIEW};
+    stStart = 0; st = Stats{};
     blit::reset();
     std::lock_guard<std::mutex> l(mtx); state.running = false;
     vrlog::write("xr: session destroyed");
@@ -266,12 +282,14 @@ void poll() { pollEvents(); }
 
 void onPresent(ID3D11DeviceContext* ctx, ID3D11Texture2D* bb) {
     pollEvents();
+    if (sessionRunning) { ++st.presents; statsTick(); }
     if (!sessionRunning) { std::lock_guard<std::mutex> l(mtx); state.running = false; return; }
     XrFrameState fs{XR_TYPE_FRAME_STATE}; XrFrameWaitInfo wi{XR_TYPE_FRAME_WAIT_INFO};
     if (g_fatal) { std::lock_guard<std::mutex> l(mtx); state.running = false; return; }
     ULONGLONG t0 = GetTickCount64();
     XrResult wfr = xrWaitFrame(sess, &wi, &fs);
     ULONGLONG tw = GetTickCount64() - t0;
+    if (tw > st.maxMs) st.maxMs = tw;
     if (frameNo < 5 || tw > 500) vrlog::write("xr: frame %llu xrWaitFrame %d took %llu ms", (unsigned long long)frameNo, (int)wfr, tw);
     if (XR_FAILED(wfr)) return;
     XrFrameBeginInfo bi{XR_TYPE_FRAME_BEGIN_INFO}; xrBeginFrame(sess, &bi);
@@ -280,7 +298,9 @@ void onPresent(ID3D11DeviceContext* ctx, ID3D11Texture2D* bb) {
     { std::lock_guard<std::mutex> l(mtx); eye = state.renderEye; }   // the eye this frame was rendered for
     // copy this frame into its eye
     uint32_t idx; XrSwapchainImageAcquireInfo ai{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
-    if (XR_SUCCEEDED(xrAcquireSwapchainImage(sc[eye], &ai, &idx))) {
+    XrResult ar = xrAcquireSwapchainImage(sc[eye], &ai, &idx);
+    if (XR_FAILED(ar)) { ++st.acqFail; st.lastErr = ar; }
+    if (XR_SUCCEEDED(ar)) {
         XrSwapchainImageWaitInfo w{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO}; w.timeout = 100000000;   // 100 ms
         XrResult wr = XR_TIMEOUT_EXPIRED;
         for (int t = 0; t < 10 && wr == XR_TIMEOUT_EXPIRED; ++t) wr = xrWaitSwapchainImage(sc[eye], &w);   // must succeed before release
@@ -289,7 +309,8 @@ void onPresent(ID3D11DeviceContext* ctx, ID3D11Texture2D* bb) {
             float aspect = (float)vcv[eye].recommendedImageRectWidth / (float)vcv[eye].recommendedImageRectHeight;
             bool srgb = scFormat == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB || scFormat == DXGI_FORMAT_B8G8R8A8_UNORM_SRGB;   // GTA's image is already gamma-encoded
             bool drawn = blit::draw(ctx, bb, scImg[eye][idx].texture, (DXGI_FORMAT)scFormat, srgb, aspect);
-            if (!drawn && frameNo < 5) vrlog::write("xr: blit failed for eye %d", eye);
+            if (!drawn) { ++st.blitFail; if (frameNo < 5) vrlog::write("xr: blit failed for eye %d", eye); }
+            ctx->Flush();   // hand the eye image to the GPU now: SteamVR's compositor reads it from another process
             XrSwapchainImageReleaseInfo ri{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO}; xrReleaseSwapchainImage(sc[eye], &ri);
             if (drawn) scHasImage[eye] = true;
         }
@@ -320,8 +341,9 @@ void onPresent(ID3D11DeviceContext* ctx, ID3D11Texture2D* bb) {
             XrActionStateBoolean b{XR_TYPE_ACTION_STATE_BOOLEAN}; xrGetActionStateBoolean(sess, &g, &b); s.value[i] = b.currentState ? 1.f : 0.f;
         }
     }
-    // the eye that was just rendered keeps the view it was rendered with
-    lastView[eye] = views[eye];
+    // the eye that was just rendered keeps the view it was rendered with (only a valid tracked pose)
+    bool tracked = (vs.viewStateFlags & XR_VIEW_STATE_ORIENTATION_VALID_BIT) && poseOk(views[eye].pose);
+    if (tracked) lastView[eye] = views[eye];
 
     XrCompositionLayerProjectionView pv[2];
     for (int e = 0; e < 2; ++e) {
@@ -334,9 +356,13 @@ void onPresent(ID3D11DeviceContext* ctx, ID3D11Texture2D* bb) {
     const XrCompositionLayerBaseHeader* layers[] = {(XrCompositionLayerBaseHeader*)&layer};
     XrFrameEndInfo ei{XR_TYPE_FRAME_END_INFO}; ei.displayTime = fs.predictedDisplayTime; ei.environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
     bool both = scHasImage[0] && scHasImage[1];
-    ei.layerCount = (both && fs.shouldRender) ? 1 : 0; ei.layers = layers;
+    bool poses = poseOk(lastView[0].pose) && poseOk(lastView[1].pose);   // a zero quaternion makes xrEndFrame fail
+    if (!poses) ++st.badPose;
+    if (!fs.shouldRender) ++st.noRender;
+    ei.layerCount = (both && poses && fs.shouldRender) ? 1 : 0; ei.layers = layers;
     XrResult er = xrEndFrame(sess, &ei);
-    if (XR_FAILED(er) && (frameNo < 5 || frameNo % 300 == 0)) vrlog::write("xr: xrEndFrame failed (%d)", (int)er);
+    ++st.submitted; if (ei.layerCount) ++st.layered;
+    if (XR_FAILED(er)) { ++st.endFail; st.lastErr = er; if (st.endFail == 1) vrlog::write("xr: xrEndFrame failed (%d)", (int)er); }
     if (frameNo < 5) vrlog::write("xr: frame %llu submitted (eye %d, layers %u, shouldRender %d)", (unsigned long long)frameNo, eye, ei.layerCount, (int)fs.shouldRender);
     if (GetTickCount64() - t0 > 3000) { vrlog::write("xr: one frame took over 3 s - VR switched off to keep the game alive"); g_fatal = true; }
 
