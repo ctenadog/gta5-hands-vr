@@ -29,4 +29,6 @@ void onPresent(ID3D11DeviceContext* ctx, ID3D11Texture2D* backbuffer); // submit
 VrState snapshot();                                  // copy for the script thread
 void shutdown();
 void toggleTestPattern();                            // F10: colour test image instead of the game
+void reportCameraPose(const XrPoseF3& usedPose);       // script thread: the (roll-free) pose the game camera was just set to
+XrPoseF3 removeRoll(const XrPoseF3& p);                 // same orientation without head tilt (GTA camera renders roll-free)
 }

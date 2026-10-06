@@ -66,16 +66,15 @@ bool onlineGuard() {
 
 // systems.head_camera: scripted camera = the headset. Mono: head centre, same image to both eyes. Stereo: this frame's eye.
 void headCamera(int ped, const VrState& s, float yaw, V anchor) {
-    const XrPoseF3& e = s.stereo ? s.eye[s.renderEye] : s.head;
+    // The game camera gets only yaw + pitch (roll 0: GTA's roll sign is unverified and a wrong sign tilted the world).
+    // The exact roll-free pose is reported to the compositor, which applies head tilt and latency correction itself.
+    XrPoseF3 e = xr::removeRoll(s.stereo ? s.eye[s.renderEye] : s.head);
     V pos = s.stereo ? add(anchor, xrToGta(sub(xrPos(e), xrPos(s.head)), yaw)) : anchor;
-    V fwd = qrot(e, {0,0,-1}), up = qrot(e, {0,1,0});
-    V gf = xrToGta(fwd, yaw), gu = xrToGta(up, yaw);
+    V gf = xrToGta(qrot(e, {0,0,-1}), yaw);
     float camYaw = atan2f(-gf.x, gf.y) * 57.29578f;
     float pitch = asinf(fmaxf(-1.f, fminf(1.f, gf.z))) * 57.29578f;
-    // roll: angle of the camera's up vector around the forward axis (0 when level)
-    float cy = cosf(camYaw / 57.29578f), sy = sinf(camYaw / 57.29578f);
-    V right{cy, sy, 0.f};   // GTA right vector for yaw camYaw (forward = (-sin, cos))
-    float roll = atan2f(-(gu.x*right.x + gu.y*right.y), gu.z) * 57.29578f;
+    float roll = 0.f;
+    xr::reportCameraPose(e);
     float fov = fmaxf(30.f, fminf(120.f, s.fovDeg));
     if (!g_cam) {
         g_cam = natives::invoke<int>(N_CREATE_CAM_WITH_PARAMS, "DEFAULT_SCRIPTED_CAMERA", pos.x, pos.y, pos.z, pitch, roll, camYaw, fov, 1, 2);
@@ -93,7 +92,10 @@ void headCamera(int ped, const VrState& s, float yaw, V anchor) {
 }
 
 // systems.arm_follow: one IK target per row of sheets/arms.json, in the same world-locked frame as the camera
+bool g_armsOn = true;
 void armFollow(int ped, const VrState& s, bool inVehicle, float yaw, V anchor) {
+    if (!g_armsOn) return;
+    natives::invoke(N_SET_PED_CAN_ARM_IK, ped, 1);
     for (const ArmRow& a : kArms) {
         if (inVehicle && !a.inVehicle) continue;
         const XrPoseF3& p = s.pose[a.pose];
@@ -102,6 +104,8 @@ void armFollow(int ped, const VrState& s, bool inVehicle, float yaw, V anchor) {
         if (len(rel) > a.maxReach) { float k = a.maxReach / len(rel); rel = {rel.x*k, rel.y*k, rel.z*k}; }
         V target = add(anchor, rel);
         natives::invoke(N_SET_IK_TARGET, ped, a.ikIndex, 0, 0, target.x, target.y, target.z, 0, a.blendIn, a.blendOut);
+        static int dbg = 0;
+        if (dbg < 6) { ++dbg; vrlog::write("arm %s: controller rel (%.2f %.2f %.2f) target (%.1f %.1f %.1f) anchor z %.1f", a.side, rel.x, rel.y, rel.z, target.x, target.y, target.z, anchor.z); }
     }
 }
 
@@ -154,6 +158,8 @@ void forceOff() { if (g_enabled) { g_enabled = false; vrlog::write("VR switched 
 int generation() { return g_gen; }
 void recenter() { g_yawRefSet = false; vrlog::write("F9: recenter"); }
 bool enabled() { return g_enabled; }
+
+void toggleArms() { g_armsOn = !g_armsOn; vrlog::write("F11: arm IK %s", g_armsOn ? "on" : "off"); }
 
 void tick() {
     if (!natives::ready()) return;
