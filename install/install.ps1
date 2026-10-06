@@ -4,6 +4,16 @@ $ErrorActionPreference = 'Stop'
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 function Ok($p) { $p -and (Test-Path (Join-Path $p 'GTA5.exe')) }
 
+foreach ($f in 'GTA5VR.asi','openxr_loader.dll') {
+  if (-not (Test-Path (Join-Path $here $f))) {
+    Write-Host "ERROR: $f is not next to install.bat ($here)."
+    Write-Host 'You probably downloaded the SOURCE code (Code -> Download ZIP). That zip has no built mod.'
+    Write-Host 'Download GTA5VR-0.2.0.zip from Releases -> latest (or Actions -> build -> Artifacts -> GTA5VR),'
+    Write-Host 'unpack it to any folder (e.g. Downloads), and run install.bat from THERE.'
+    exit 1
+  }
+}
+
 $cands = @()
 foreach ($k in 'HKLM:\SOFTWARE\WOW6432Node\Rockstar Games\Grand Theft Auto V','HKLM:\SOFTWARE\WOW6432Node\Rockstar Games\GTAV') {
   try { $v = Get-ItemProperty $k -ErrorAction Stop
@@ -13,7 +23,7 @@ try { $s = (Get-ItemProperty 'HKCU:\Software\Valve\Steam' -ErrorAction Stop).Ste
       $cands += "$s\steamapps\common\Grand Theft Auto V"
       $lf = "$s\steamapps\libraryfolders.vdf"
       if (Test-Path $lf) { Select-String -Path $lf -Pattern '"path"\s+"([^"]+)"' | ForEach-Object { $cands += ($_.Matches[0].Groups[1].Value -replace '\\\\','\') + '\steamapps\common\Grand Theft Auto V' } } } catch {}
-$cands += 'C:\Program Files\Rockstar Games\Grand Theft Auto V','C:\Program Files\Epic Games\GTAV','D:\SteamLibrary\steamapps\common\Grand Theft Auto V'
+$cands += 'C:\Program Files\Rockstar Games\Grand Theft Auto V','C:\Program Files\Epic Games\GTAV','D:\SteamLibrary\steamapps\common\Grand Theft Auto V','E:\SteamLibrary\steamapps\common\Grand Theft Auto V'
 
 $game = $cands | Where-Object { Ok $_ } | Select-Object -First 1
 if (-not $game) {
@@ -24,10 +34,12 @@ if (-not $game) {
 }
 Write-Host "GTA V folder: $game"
 
+if ((Resolve-Path $here).Path -ne (Resolve-Path $game).Path) {
 Copy-Item (Join-Path $here 'GTA5VR.asi') $game -Force
 Copy-Item (Join-Path $here 'openxr_loader.dll') $game -Force
+}
 $doc = Join-Path $game 'GTA5VR'; New-Item -ItemType Directory -Force $doc | Out-Null
-Copy-Item (Join-Path $here 'GTA5VR-README.txt') $doc -Force
+if (Test-Path (Join-Path $here 'GTA5VR-README.txt')) { Copy-Item (Join-Path $here 'GTA5VR-README.txt') $doc -Force }
 if (Test-Path (Join-Path $here 'licenses')) { Copy-Item (Join-Path $here 'licenses') $doc -Recurse -Force }
 Write-Host 'Copied GTA5VR.asi and openxr_loader.dll.'
 
