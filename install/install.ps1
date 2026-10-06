@@ -1,4 +1,4 @@
-# GTA V Hands VR installer. Finds GTA V Legacy (GTA5.exe), copies GTA5VR.asi + openxr_loader.dll next to it,
+﻿# GTA V Hands VR installer. Finds GTA V Legacy (GTA5.exe), removes old mod files, copies GTA5VR.asi + openxr_loader.dll next to it,
 # checks Script Hook V and the ASI loader. Never touches GTA Online files.
 $ErrorActionPreference = 'Stop'
 $here = if ($env:GTA5VR_HERE) { $env:GTA5VR_HERE.TrimEnd('\') } else { Split-Path -Parent $MyInvocation.MyCommand.Path }
@@ -34,6 +34,13 @@ if (-not $game) {
 }
 Write-Host "Папка GTA V: $game"
 
+while (Get-Process -Name 'GTA5','GTAVLauncher','PlayGTAV' -ErrorAction SilentlyContinue) { Read-Host 'GTA V запущена - закройте игру и нажмите Enter' | Out-Null }
+# старые файлы мода
+foreach ($d in $game, (Join-Path $game 'scripts'), (Join-Path $game 'plugins'), (Join-Path $game 'asi')) {
+  $o = Join-Path $d 'GTA5VR.asi'; if ((Test-Path $o) -and ($d -ne $here)) { Remove-Item $o -Force; Write-Host "Удалён старый $o" }
+}
+if (Test-Path (Join-Path $game 'GTA5VR')) { Remove-Item (Join-Path $game 'GTA5VR') -Recurse -Force; Write-Host 'Удалена старая папка GTA5VR' }
+if (Test-Path (Join-Path $game 'GTA5VR.log')) { Move-Item (Join-Path $game 'GTA5VR.log') (Join-Path $game 'GTA5VR.old.log') -Force }
 if ((Resolve-Path $here).Path -ne (Resolve-Path $game).Path) {
 Copy-Item (Join-Path $here 'GTA5VR.asi') $game -Force
 Copy-Item (Join-Path $here 'openxr_loader.dll') $game -Force
