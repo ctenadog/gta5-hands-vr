@@ -17,6 +17,8 @@
 #include <vector>
 #include <string>
 #include <cstdio>
+#include <atomic>
+#include <mutex>
 #include "natives.h"
 #include "log.h"
 #include "hands.h"
@@ -75,6 +77,29 @@ bool g_found = false, g_searched = false, g_on = false, g_wantSearch = false;
 int g_handIdx[2] = {-1, -1};     // left, right bone indices
 M3 g_cal[2]; bool g_calSet[2] = {false, false};
 float g_written[2][3][3]; bool g_haveWritten = false; int g_persistLog = 0;
+// Background writer: the game recomputes the skeleton after scripts run (0.2.9 log: "overwritten by the game"), so a
+// write from the script thread is lost before rendering. A separate thread re-writes the target rotation continuously,
+// hitting the window between the animation update and the copy to the renderer. Translation is never touched.
+// Safety: it only writes while the script thread refreshed the target within the last 50 ms (stops in menus, on death,
+// on VR off, on any failed check), and only into the array the script thread validated this frame.
+std::atomic<uintptr_t> g_wArr{0}; std::atomic<ULONGLONG> g_wBeat{0}; std::mutex g_wMtx;
+float g_wTarget[2][3][3]; bool g_wHave[2] = {false, false}; std::atomic<unsigned> g_wCount{0};
+HANDLE g_wThread = nullptr;
+DWORD WINAPI writer(LPVOID) {
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
+    for (;;) {
+        uintptr_t arr = g_wArr.load();
+        if (!arr || GetTickCount64() - g_wBeat.load() > 50) { Sleep(5); continue; }
+        float t[2][3][3]; bool have[2];
+        { std::lock_guard<std::mutex> l(g_wMtx); memcpy(t, g_wTarget, sizeof(t)); have[0] = g_wHave[0]; have[1] = g_wHave[1]; }
+        for (int h = 0; h < 2; ++h) if (have[h]) {
+            float* f = (float*)(arr + (uintptr_t)g_handIdx[h] * 64);
+            for (int c = 0; c < 3; ++c) for (int r = 0; r < 3; ++r) f[c * 4 + r] = t[h][c][r];
+        }
+        g_wCount.fetch_add(1);
+        for (int i = 0; i < 200; ++i) YieldProcessor();   // ~tens of microseconds between writes
+    }
+}
 
 const int kBoneIds[4] = {18905 /*SKEL_L_Hand*/, 57005 /*SKEL_R_Hand*/, 31086 /*SKEL_Head*/, 0x2e28 /*SKEL_Pelvis*/};
 
@@ -150,6 +175,8 @@ namespace hands {
 void toggle() {
     if (!g_found) { g_searched = false; g_wantSearch = true; vrlog::write("F12: searching the skeleton (VR must be on, stand still)..."); return; }
     g_on = !g_on; g_calSet[0] = g_calSet[1] = false; g_haveWritten = false; g_persistLog = 0;
+    g_wArr = 0; { std::lock_guard<std::mutex> l(g_wMtx); g_wHave[0] = g_wHave[1] = false; }
+    if (g_on && !g_wThread) g_wThread = CreateThread(nullptr, 0, writer, nullptr, 0, nullptr);
     vrlog::write("F12: hand rotation %s (hold the controllers the way the hands are held now)", g_on ? "ON" : "off");
 }
 
@@ -162,19 +189,21 @@ void tick(int ped, const XrPoseF3* gripLeftRight[2], float yawDeg) {
         search(ped, pedAddr);
         return;
     }
-    if (!g_on || !g_found || !pedAddr) return;
+    if (!g_on || !g_found || !pedAddr) { g_wArr = 0; return; }
     uintptr_t arr = resolve(pedAddr);
     M3 E; float epos[3];
-    if (!arr || !entityMatrix(pedAddr, E, epos)) { vrlog::write("hands: path no longer valid - rotation off"); g_on = false; return; }
+    if (!arr || !entityMatrix(pedAddr, E, epos)) { g_wArr = 0; vrlog::write("hands: path no longer valid - rotation off"); g_on = false; return; }
+    static ULONGLONG lastRate = 0;
+    if (GetTickCount64() - lastRate > 5000) { lastRate = GetTickCount64(); vrlog::write("hands: background writes in the last 5 s: %u", g_wCount.exchange(0)); }
     for (int h = 0; h < 2; ++h) {
         uintptr_t m = arr + (uintptr_t)g_handIdx[h] * 64;
-        if (!readable(m, 64) || !writable(m, 48)) { vrlog::write("hands: matrix not writable - rotation off"); g_on = false; return; }
+        if (!readable(m, 64) || !writable(m, 48)) { g_wArr = 0; vrlog::write("hands: matrix not writable - rotation off"); g_on = false; return; }
         // sanity: the bone translation must still be where the game puts the hand
         Vector3 w = natives::invokeV3(N_GET_WORLD_POSITION_OF_ENTITY_BONE, ped, g_handIdx[h]);
         float* f = (float*)m;
         float want[3] = {w.x, w.y, w.z};
         if (!g_worldSpace) { float d[3] = {w.x - epos[0], w.y - epos[1], w.z - epos[2]}; for (int i = 0; i < 3; ++i) want[i] = E.m[0][i]*d[0] + E.m[1][i]*d[1] + E.m[2][i]*d[2]; }
-        for (int i = 0; i < 3; ++i) if (!(fabsf(f[12 + i] - want[i]) < 0.1f)) { vrlog::write("hands: bone check failed (%.2f vs %.2f) - rotation off", f[12 + i], want[i]); g_on = false; return; }
+        for (int i = 0; i < 3; ++i) if (!(fabsf(f[12 + i] - want[i]) < 0.1f)) { g_wArr = 0; vrlog::write("hands: bone check failed (%.2f vs %.2f) - rotation off", f[12 + i], want[i]); g_on = false; return; }
         // did last frame's write survive until now? (tells whether the game overwrites it before rendering)
         if (g_haveWritten && g_persistLog < 4) {
             float diff = 0; for (int c = 0; c < 3; ++c) for (int r = 0; r < 3; ++r) diff += fabsf(f[c * 4 + r] - g_written[h][c][r]);
@@ -191,8 +220,10 @@ void tick(int ped, const XrPoseF3* gripLeftRight[2], float yawDeg) {
         M3 target = mul(ctrl, g_cal[h]);
         if (!g_worldSpace) target = mul(tr(E), target);
         for (int c = 0; c < 3; ++c) for (int r = 0; r < 3; ++r) { f[c * 4 + r] = target.m[r][c]; g_written[h][c][r] = target.m[r][c]; }
+        { std::lock_guard<std::mutex> l(g_wMtx); memcpy(g_wTarget[h], g_written[h], sizeof(g_written[h])); g_wHave[h] = true; }
     }
     g_haveWritten = true;
+    g_wArr = arr; g_wBeat = GetTickCount64();
 }
 
 }
