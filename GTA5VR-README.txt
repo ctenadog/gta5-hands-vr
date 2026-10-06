@@ -1,13 +1,14 @@
-GTA V Hands VR 0.2.7 (DEV, early test build) - story mode only
+GTA V Hands VR 0.2.9 (DEV, early test build) - story mode only
 ==============================================================
 Goal: head-tracked first-person VR for GTA V Legacy, arms follow the controllers, right controller aims, trigger fires.
 
 STATUS (from real-PC logs: Pico + SteamVR)
   Works:   loads via Script Hook V, F8 on/off, SteamVR connection, frames submitted to SteamVR (~60 fps, no errors),
            arms move to controller positions, auto-off on hangs.
-  Broken:  headset shows the SteamVR home with "loading" instead of the game (under investigation, use F10);
-           wrists point down (Script Hook V can set hand position, not hand rotation).
-  Untested: head camera, controller aiming/shooting, snap turn, stereo=1. No two-hand steering yet.
+  Broken:  headset shows the SteamVR home with "Waiting..." instead of the game (0.2.8 hides the Steam app id; also untick
+           Desktop Game Theatre in GTA V Steam properties);
+           wrists point down (no native for hand rotation; F12 = experimental memory-based rotation).
+  Untested: head camera, controller aiming/shooting, snap turn, stereo=1, F12. No two-hand steering yet.
 
 FEATURES
   OpenXR, SteamVR by default (runtime=system = Windows active runtime); VR starts only on F8.
@@ -18,8 +19,9 @@ FEATURES
   Switches off in GTA Online, on hangs (>3 s frame), camera released in pause menu/loading screens. GTA5VR.log with frame stats.
   setup.bat: finds GTA V, removes old mod files, downloads the mod and Script Hook V, installs everything.
 
-KEYS: F8 VR on/off (look straight ahead), F9 recenter, F10 test colour (magenta left / green right eye), F11 arms on/off.
-GTA5VR.ini: runtime=steamvr|system, stereo=0|1, latency=1 (try 2 or 0 if the image swims).
+KEYS: F8 VR on/off (look straight ahead), F9 recenter, F10 test colour (magenta left / green right eye), F11 arms on/off,
+      F12 experimental wrist rotation (1st press: find skeleton, 2nd: toggle).
+GTA5VR.ini: runtime=steamvr|system, stereo=0|1, latency=1 (try 2 or 0 if the image swims), hide_steam_id=1.
 
 INSTALL: run setup.bat from https://github.com/ctenadog/gta5-hands-vr/releases/tag/latest (Assets).
 REQUIRED: Script Hook V by Alexander Blade (setup.bat downloads it) - https://www.dev-c.com/gtav/scripthookv/
