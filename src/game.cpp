@@ -6,6 +6,7 @@
 #include "xr.h"
 #include "log.h"
 #include "game.h"
+#include "hands.h"
 
 namespace {
 int  g_cam = 0;
@@ -174,6 +175,7 @@ void tick() {
     V anchor = eyeAnchor(ped, s, yaw);
     headCamera(ped, s, yaw, anchor);
     armFollow(ped, s, inVehicle, yaw, anchor);
+    { const XrPoseF3* g[2] = {&s.pose[IN_LEFT_GRIP_POSE], &s.pose[IN_RIGHT_GRIP_POSE]}; hands::tick(ped, g, yaw); }
     weaponAim(ped, s, inVehicle, yaw, anchor);
     controllerInput(s, inVehicle);
 }

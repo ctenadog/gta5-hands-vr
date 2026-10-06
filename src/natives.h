@@ -19,6 +19,7 @@ bool registerPresent(PresentCb cb);
 void unregisterPresent(PresentCb cb);
 void wait(unsigned ms);
 int  gameVersion();
+uint8_t* entityAddress(int handle);           // SHV getScriptHandleBaseAddress, nullptr if unavailable
 }
 
 namespace natives {

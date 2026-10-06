@@ -22,6 +22,8 @@
   {"name": "IS_PAUSE_MENU_ACTIVE", "hash": "0xB0034A223497FFCB", "args": "none", "ret": "int", "verified": false},
   {"name": "GET_IS_LOADING_SCREEN_ACTIVE", "hash": "0x10D0A8F259E93EC9", "args": "none", "ret": "int", "verified": false},
   {"name": "SET_GAMEPLAY_CAM_RELATIVE_HEADING", "hash": "0xB4EC2312F4E5B1F1", "args": "float heading", "ret": "void", "verified": false},
-  {"name": "SET_PED_CAN_ARM_IK", "hash": "0x6C3B4D6D13B4C841", "args": "int ped, int toggle", "ret": "void", "verified": false}
+  {"name": "SET_PED_CAN_ARM_IK", "hash": "0x6C3B4D6D13B4C841", "args": "int ped, int toggle", "ret": "void", "verified": false},
+  {"name": "GET_PED_BONE_INDEX", "hash": "0x3F428D08BE5AAE31", "args": "int ped, int boneId", "ret": "int", "verified": false},
+  {"name": "GET_WORLD_POSITION_OF_ENTITY_BONE", "hash": "0x44A8FCB8ED227738", "args": "int entity, int boneIndex", "ret": "Vector3", "verified": false}
  ]
 }

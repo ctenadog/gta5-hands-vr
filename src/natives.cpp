@@ -12,8 +12,9 @@ using Push64Fn   = void(*)(uint64_t);
 using CallFn     = uint64_t*(*)();
 using PresRegFn  = void(*)(shv::PresentCb);
 using VerFn      = int(*)();
+using BaseFn     = uint8_t*(*)(int);
 RegFn pReg; UnregFn pUnreg; WaitFn pWait; InitFn pInit; Push64Fn pPush; CallFn pCall;
-PresRegFn pPresReg, pPresUnreg; VerFn pVer;
+PresRegFn pPresReg, pPresUnreg; VerFn pVer; BaseFn pBase;
 bool g_ready = false;
 const char* g_err = "not initialised";
 template<class T> bool get(HMODULE m, T& out, const char* name) {
@@ -37,6 +38,7 @@ bool load() {
             & get(m, pPresReg,   "?presentCallbackRegister@@YAXP6AXPEAX@Z@Z")
             & get(m, pPresUnreg, "?presentCallbackUnregister@@YAXP6AXPEAX@Z@Z");
     get(m, pVer, "?getGameVersion@@YA?AW4eGameVersion@@XZ");   // optional, log only
+    get(m, pBase, "?getScriptHandleBaseAddress@@YAPEAEH@Z");     // optional: entity handle -> game object (hands)
     if (!ok) { g_err = "ScriptHookV.dll is missing exports (update Script Hook V)"; return false; }
     g_ready = true; g_err = "";
     return true;
@@ -47,6 +49,7 @@ bool registerPresent(PresentCb cb) { if (!pPresReg) return false; pPresReg(cb); 
 void unregisterPresent(PresentCb cb) { if (pPresUnreg) pPresUnreg(cb); }
 void wait(unsigned ms) { if (pWait) pWait(ms); }
 int  gameVersion() { return pVer ? pVer() : -1; }
+uint8_t* entityAddress(int handle) { return pBase ? pBase(handle) : nullptr; }
 }
 
 namespace natives {
