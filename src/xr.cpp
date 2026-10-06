@@ -14,6 +14,7 @@
 #include <openxr/openxr_platform.h>
 #include "xr.h"
 #include "log.h"
+#include "blit.h"
 #include <tlhelp32.h>
 #include <string>
 
@@ -29,6 +30,7 @@ XRFN(xrAcquireSwapchainImage) XRFN(xrWaitSwapchainImage) XRFN(xrReleaseSwapchain
 XRFN(xrStringToPath) XRFN(xrCreateActionSet) XRFN(xrCreateAction) XRFN(xrSuggestInteractionProfileBindings)
 XRFN(xrAttachSessionActionSets) XRFN(xrSyncActions) XRFN(xrGetActionStateFloat) XRFN(xrGetActionStateBoolean)
 XRFN(xrCreateActionSpace) XRFN(xrDestroyInstance) XRFN(xrGetD3D11GraphicsRequirementsKHR) XRFN(xrRequestExitSession)
+XRFN(xrDestroySession) XRFN(xrDestroySwapchain) XRFN(xrDestroySpace)
 #undef XRFN
 
 XrInstance inst = XR_NULL_HANDLE; XrSystemId sys = 0; XrSession sess = XR_NULL_HANDLE;
@@ -45,6 +47,22 @@ bool g_fatal = false;            // something hung: F8 must be pressed again
 XrSessionState lastState = XR_SESSION_STATE_UNKNOWN;
 std::mutex mtx; VrState state{};
 uint64_t frameNo = 0;
+int64_t scFormat = 0;
+
+// destroys the session and everything made from it, so the next F8 starts clean
+void destroySession() {
+    for (int i = 0; i < IN_COUNT; ++i) if (actSpace[i]) { xrDestroySpace(actSpace[i]); actSpace[i] = XR_NULL_HANDLE; }
+    for (int e = 0; e < 2; ++e) { if (sc[e]) xrDestroySwapchain(sc[e]); sc[e] = XR_NULL_HANDLE; scImg[e].clear(); scHasImage[e] = false; }
+    if (stage) xrDestroySpace(stage);
+    if (viewSpace) xrDestroySpace(viewSpace);
+    stage = viewSpace = XR_NULL_HANDLE;
+    if (sess) xrDestroySession(sess);
+    sess = XR_NULL_HANDLE;
+    sessionRunning = false; exitRequested = false; lastState = XR_SESSION_STATE_UNKNOWN; frameNo = 0;
+    blit::reset();
+    std::lock_guard<std::mutex> l(mtx); state.running = false;
+    vrlog::write("xr: session destroyed");
+}
 
 bool ok(XrResult r, const char* what) { if (XR_FAILED(r)) { vrlog::write("xr: %s failed (%d)", what, (int)r); return false; } return true; }
 XrPath path(const char* s) { XrPath p = XR_NULL_PATH; xrStringToPath(inst, s, &p); return p; }
@@ -89,8 +107,10 @@ void pollEvents() {
             vrlog::write("xr: session state %d", (int)s->state);
             if (s->state == XR_SESSION_STATE_STOPPING) {
                 xrEndSession(sess); sessionRunning = false; scHasImage[0] = scHasImage[1] = false;
+                { std::lock_guard<std::mutex> l(mtx); state.running = false; }   // camera must not keep using stale poses
                 vrlog::write("xr: session ended (VR off)");
             }
+            if (s->state == XR_SESSION_STATE_EXITING || s->state == XR_SESSION_STATE_LOSS_PENDING) { destroySession(); return; }
         }
         ev = {XR_TYPE_EVENT_DATA_BUFFER};
     }
@@ -175,6 +195,7 @@ bool loadLoader() {
     L(xrReleaseSwapchainImage) L(xrStringToPath) L(xrCreateActionSet) L(xrCreateAction) L(xrSuggestInteractionProfileBindings)
     L(xrAttachSessionActionSets) L(xrSyncActions) L(xrGetActionStateFloat) L(xrGetActionStateBoolean) L(xrCreateActionSpace)
     L(xrDestroyInstance) L(xrGetD3D11GraphicsRequirementsKHR) L(xrRequestExitSession)
+    L(xrDestroySession) L(xrDestroySwapchain) L(xrDestroySpace)
 #undef L
     XrSystemGetInfo gi{XR_TYPE_SYSTEM_GET_INFO}; gi.formFactor = XR_FORM_FACTOR_HEAD_MOUNTED_DISPLAY;
     if (!ok(xrGetSystem(inst, &gi, &sys), "xrGetSystem (headset connected?)")) { xrDestroyInstance(inst); inst = XR_NULL_HANDLE; return false; }
@@ -194,24 +215,30 @@ bool startSession(ID3D11Device* dev, DXGI_FORMAT bbFormat) {
     { ID3D10Multithread* mt = nullptr; if (SUCCEEDED(dev->QueryInterface(__uuidof(ID3D10Multithread), (void**)&mt))) { mt->SetMultithreadProtected(TRUE); mt->Release(); } }
     XrGraphicsBindingD3D11KHR gb{XR_TYPE_GRAPHICS_BINDING_D3D11_KHR}; gb.device = dev;
     XrSessionCreateInfo si{XR_TYPE_SESSION_CREATE_INFO}; si.next = &gb; si.systemId = sys;
-    if (!ok(xrCreateSession(inst, &si, &sess), "xrCreateSession (GPU must match the headset's adapter)")) return false;
+    if (!blit::init(dev)) return false;
+    if (!ok(xrCreateSession(inst, &si, &sess), "xrCreateSession (GPU must match the headset's adapter)")) { sess = XR_NULL_HANDLE; return false; }
     XrReferenceSpaceCreateInfo rs{XR_TYPE_REFERENCE_SPACE_CREATE_INFO}; rs.poseInReferenceSpace.orientation.w = 1;
     rs.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_LOCAL; xrCreateReferenceSpace(sess, &rs, &stage);
     rs.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_VIEW;  xrCreateReferenceSpace(sess, &rs, &viewSpace);
-    // CopySubresourceRegion needs the same format family as GTA's backbuffer
-    int64_t fmt = DXGI_FORMAT_R8G8B8A8_UNORM;
+    // pick only a format the runtime actually offers (SteamVR rejected GTA's BGRA format 87 with -26);
+    // the shader blit converts BGRA/RGBA and gamma, so any 8-bit colour format works
+    int64_t fmt = 0; std::string offered;
     { uint32_t fc = 0; xrEnumerateSwapchainFormats(sess, 0, &fc, nullptr); std::vector<int64_t> f(fc);
       xrEnumerateSwapchainFormats(sess, fc, &fc, f.data());
-      for (auto x : f) if (x == bbFormat) { fmt = x; break; } }
-    vrlog::write("xr: backbuffer format %d, swapchain format %d", (int)bbFormat, (int)fmt);
+      for (auto x : f) offered += std::to_string(x) + " ";
+      const int64_t pref[] = {DXGI_FORMAT_R8G8B8A8_UNORM_SRGB, DXGI_FORMAT_B8G8R8A8_UNORM_SRGB, DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_B8G8R8A8_UNORM};
+      for (auto want : pref) { for (auto x : f) if (x == want) { fmt = x; break; } if (fmt) break; }
+      if (!fmt && !f.empty()) fmt = f[0]; }
+    scFormat = fmt;
+    vrlog::write("xr: backbuffer format %d, runtime offers [%s], using %d", (int)bbFormat, offered.c_str(), (int)fmt);
     uint32_t n = 2; xrEnumerateViewConfigurationViews(inst, sys, XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO, 2, &n, vcv);
     for (int e = 0; e < 2; ++e) {
         XrSwapchainCreateInfo sci{XR_TYPE_SWAPCHAIN_CREATE_INFO};
-        sci.usageFlags = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT | XR_SWAPCHAIN_USAGE_TRANSFER_DST_BIT;
+        sci.usageFlags = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT;
         sci.format = fmt; sci.sampleCount = 1;
         sci.width = vcv[e].recommendedImageRectWidth; sci.height = vcv[e].recommendedImageRectHeight;
         sci.faceCount = 1; sci.arraySize = 1; sci.mipCount = 1;
-        if (!ok(xrCreateSwapchain(sess, &sci, &sc[e]), "xrCreateSwapchain")) return false;
+        if (!ok(xrCreateSwapchain(sess, &sci, &sc[e]), "xrCreateSwapchain")) { destroySession(); return false; }
         uint32_t c = 0; xrEnumerateSwapchainImages(sc[e], 0, &c, nullptr);
         scImg[e].assign(c, {XR_TYPE_SWAPCHAIN_IMAGE_D3D11_KHR});
         xrEnumerateSwapchainImages(sc[e], c, &c, (XrSwapchainImageBaseHeader*)scImg[e].data());
@@ -233,6 +260,7 @@ void setWanted(bool on) {
     if (!on && sessionRunning && !exitRequested) { exitRequested = true; ok(xrRequestExitSession(sess), "xrRequestExitSession"); }
 }
 bool hasSession() { return sess != XR_NULL_HANDLE; }
+bool needsSession() { return inst && !sess; }
 bool failed() { return g_fatal; }
 void poll() { pollEvents(); }
 
@@ -257,11 +285,13 @@ void onPresent(ID3D11DeviceContext* ctx, ID3D11Texture2D* bb) {
         XrResult wr = XR_TIMEOUT_EXPIRED;
         for (int t = 0; t < 10 && wr == XR_TIMEOUT_EXPIRED; ++t) wr = xrWaitSwapchainImage(sc[eye], &w);   // must succeed before release
         if (wr != XR_SUCCESS) { vrlog::write("xr: swapchain image never became ready (%d) - VR switched off", (int)wr); g_fatal = true; }
-        D3D11_TEXTURE2D_DESC sd; bb->GetDesc(&sd);
-        D3D11_BOX box{0,0,0, (UINT)std::min<uint32_t>(sd.Width, vcv[eye].recommendedImageRectWidth), (UINT)std::min<uint32_t>(sd.Height, vcv[eye].recommendedImageRectHeight), 1};
         if (wr == XR_SUCCESS) {
-            ctx->CopySubresourceRegion(scImg[eye][idx].texture, 0, 0, 0, 0, bb, 0, &box);   // TODO verify: backbuffer format/size vs swapchain
-            XrSwapchainImageReleaseInfo ri{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO}; xrReleaseSwapchainImage(sc[eye], &ri); scHasImage[eye] = true;
+            float aspect = (float)vcv[eye].recommendedImageRectWidth / (float)vcv[eye].recommendedImageRectHeight;
+            bool srgb = scFormat == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB || scFormat == DXGI_FORMAT_B8G8R8A8_UNORM_SRGB;   // GTA's image is already gamma-encoded
+            bool drawn = blit::draw(ctx, bb, scImg[eye][idx].texture, (DXGI_FORMAT)scFormat, srgb, aspect);
+            if (!drawn && frameNo < 5) vrlog::write("xr: blit failed for eye %d", eye);
+            XrSwapchainImageReleaseInfo ri{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO}; xrReleaseSwapchainImage(sc[eye], &ri);
+            if (drawn) scHasImage[eye] = true;
         }
     }
 

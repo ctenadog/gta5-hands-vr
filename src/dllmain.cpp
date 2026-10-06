@@ -10,7 +10,6 @@
 
 namespace {
 HMODULE g_mod = nullptr;
-bool g_sessionTried = false;
 bool g_xrOk = false;
 
 // sheet hooks.present: SHV calls this on every IDXGISwapChain::Present
@@ -36,11 +35,13 @@ void onPresent(void* swapChain) {
     if (FAILED(sw->GetDevice(__uuidof(ID3D11Device), (void**)&dev))) return;
     ID3D11Texture2D* bb = nullptr;
     if (FAILED(sw->GetBuffer(0, __uuidof(ID3D11Texture2D), (void**)&bb))) { dev->Release(); return; }
-    if (!g_sessionTried) {
-        g_sessionTried = true;
+    static int sessionGen = -1;   // one session attempt per F8 press; a new one after the previous session ended
+    if (xr::needsSession() && sessionGen != game::generation()) {
+        sessionGen = game::generation();
         D3D11_TEXTURE2D_DESC d; bb->GetDesc(&d);
-        if (!xr::startSession(dev, d.Format)) { vrlog::write("VR session could not start - see errors above"); game::forceOff(); }
+        if (!xr::startSession(dev, d.Format)) { vrlog::write("VR session could not start - see errors above"); game::forceOff(); bb->Release(); dev->Release(); return; }
     }
+    if (!xr::hasSession()) { bb->Release(); dev->Release(); return; }
     ID3D11DeviceContext* ctx = nullptr;
     dev->GetImmediateContext(&ctx);
     xr::onPresent(ctx, bb);
@@ -59,7 +60,7 @@ void scriptMain() {
 }
 
 DWORD WINAPI boot(LPVOID) {
-    vrlog::write("GTA5VR 0.2.2 loading (Script Hook V build, story mode only)");
+    vrlog::write("GTA5VR 0.2.3 loading (Script Hook V build, story mode only)");
     // SHV may be loaded after us by the ASI loader: retry for ~30 s.
     bool ok = false;
     for (int i = 0; i < 60 && !(ok = natives::init()); ++i) Sleep(500);

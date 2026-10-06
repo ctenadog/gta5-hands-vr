@@ -13,7 +13,7 @@ fi
 python3 tools/preflight.py
 python3 tools/gen.py
 x86_64-w64-mingw32-g++ -std=c++17 -O2 -s -shared -static -Wall -Wno-unused -o build/GTA5VR.asi src/*.cpp \
-  -Isrc -Ibuild/oxr/include -ld3d11 -ldxgi
+  -Isrc -Ibuild/oxr/include -ld3d11 -ldxgi -luuid
 rm -rf build/pkg && mkdir -p build/pkg/licenses
 cp build/GTA5VR.asi build/oxr/x64/bin/openxr_loader.dll build/pkg/
 cp build/oxr/share/doc/openxr/LICENSE build/pkg/licenses/OpenXR-Loader-LICENSE.txt
