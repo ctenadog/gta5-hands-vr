@@ -18,6 +18,6 @@ rm -rf build/pkg && mkdir -p build/pkg/licenses
 cp build/GTA5VR.asi build/oxr/x64/bin/openxr_loader.dll build/pkg/
 cp build/oxr/share/doc/openxr/LICENSE build/pkg/licenses/OpenXR-Loader-LICENSE.txt
 cp GTA5VR-README.txt README_RU.txt build/pkg/
-cp install/install.bat install/install.ps1 build/pkg/
+cp install/install.bat install/install.ps1 install/setup.bat build/pkg/
 (cd build/pkg && rm -f ../GTA5VR-$VER.zip && zip -qr ../GTA5VR-$VER.zip .)
 echo "built build/GTA5VR-$VER.zip"
