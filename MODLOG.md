@@ -40,3 +40,33 @@ Melty draft: GTA V Hands VR, modId f602c4c6-5677-4e51-92d8-5acfc524323e, MIT, re
   triggers only above threshold. Head yaw at F8 becomes "straight ahead" (was absolute headset yaw). F9 recenters.
 - Freeze: ID3D10Multithread protection on GTA's device; swapchain image is released only after a successful wait;
   a frame over 3 s switches VR off automatically instead of hanging; camera destroyed on exit; camera released on pause menu/loading screens.
+
+## 0.2.3 (2026-10-06)
+- User log: SteamVR picked correctly (runtime SteamVR/OpenXR, same GPU RTX 2060 SUPER). xrCreateSwapchain failed -26
+  (XR_ERROR_SWAPCHAIN_FORMAT_UNSUPPORTED): backbuffer is 87 (B8G8R8A8_UNORM), mod asked for 28 which SteamVR does not offer.
+  Also: after the session ended (state 8 EXITING) the next F8 never created a new session.
+- Fix: swapchain format chosen only from the runtime's list (prefers RGBA/BGRA sRGB); the log lists offered formats.
+  Frame goes to the eye via a small shader blit (src/blit.cpp): any format, BGRA->RGBA, centre crop to eye aspect,
+  sRGB handled; GTA's D3D state saved/restored with SwapDeviceContextState. Copy no longer needs matching formats.
+- Session lifecycle: on EXITING/LOSS_PENDING the session, swapchains and spaces are destroyed; every F8 press can create a new one.
+  VR state "running" cleared when the session stops, so the camera does not stick with stale poses.
+
+## 0.2.4 (2026-10-06)
+- User log 0.2.3: SteamVR offers [29 91 2 10 24 40 55 45 20], mod uses 29; blit ready; session reaches FOCUSED (5),
+  first frames submitted with layers 1. User sees endless SteamVR loading. Only first 5 frames were logged -> unknown why.
+- Added periodic stats to the log (every 2 s first 30 s, then 10 s): game fps, frames to headset, frames with image,
+  xrEndFrame/acquire/blit failures with last error code, invalid poses, shouldRender=0, slowest xrWaitFrame.
+- ctx->Flush() after each eye blit (SteamVR compositor reads the image from another process).
+- Only valid tracked view poses are stored per eye; layer skipped while a pose quaternion is invalid (was zero before both eyes had a pose).
+
+## 0.2.5 (2026-10-06)
+- User report on 0.2.4: no image in the headset, camera and hands shake, controller movement crooked.
+- Movement: SET_CONTROL_VALUE_NEXT_FRAME axes take -1..1; mod sent 0..1 with 0.5 as centre -> constant push. Now stick value * sign.
+- Shake: camera and IK targets were anchored to the head bone (bobs with walk anim) and rotated by ped heading (swung when
+  the character turned). Now world-locked: anchor = ped root + eye_height (+ room offset clamped 0.4 m), frame yaw changes
+  only on F8/F9 recenter and right-stick snap turn (30 deg). Gameplay cam relative heading follows the head so stick-forward = look direction.
+- Layer: submitted with the poses the game camera actually used (previous frame), not the newly located ones;
+  symmetric square fov = camera fov (was the eye's asymmetric fov -> stretched/swimming image).
+- Default mode now mono (camera at head centre, same image to both eyes); alternate-eye stereo behind GTA5VR.ini stereo=1.
+- F10 test pattern: colour gradient drawn into the eye images instead of the game, to tell "no frames reach SteamVR" from camera problems.
+- Sheets: inputs.turn_x, natives.SET_GAMEPLAY_CAM_RELATIVE_HEADING, settings.eye_height.

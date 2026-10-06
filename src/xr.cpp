@@ -39,6 +39,11 @@ XrSwapchain sc[2] = {}; std::vector<XrSwapchainImageD3D11KHR> scImg[2];
 XrViewConfigurationView vcv[2] = {{XR_TYPE_VIEW_CONFIGURATION_VIEW},{XR_TYPE_VIEW_CONFIGURATION_VIEW}};
 XrActionSet aset = XR_NULL_HANDLE; XrAction act[IN_COUNT] = {}; XrSpace actSpace[IN_COUNT] = {};
 XrView lastView[2] = {{XR_TYPE_VIEW},{XR_TYPE_VIEW}};
+XrView pendView[2] = {{XR_TYPE_VIEW},{XR_TYPE_VIEW}};   // views located last frame = the poses the game camera used for THIS frame
+XrPosef pendHead{{0,0,0,0},{0,0,0}}, lastHead{{0,0,0,0},{0,0,0}};
+bool g_stereo = false;            // GTA5VR.ini [vr] stereo=1: alternate-eye stereo (experimental); default mono
+bool g_test = false;              // F10 test pattern
+float g_tanHalf = 1.f;            // symmetric tan(half vertical fov) used for the game camera and the layer
 bool scHasImage[2] = {};
 bool sessionRunning = false;
 bool wantRunning = false;          // F8: VR on. Session is begun only while this is true.
@@ -74,6 +79,8 @@ void destroySession() {
     sess = XR_NULL_HANDLE;
     sessionRunning = false; exitRequested = false; lastState = XR_SESSION_STATE_UNKNOWN; frameNo = 0;
     for (auto& v : lastView) v = {XR_TYPE_VIEW};
+    for (auto& v : pendView) v = {XR_TYPE_VIEW};
+    pendHead = lastHead = XrPosef{{0,0,0,0},{0,0,0}};
     stStart = 0; st = Stats{};
     blit::reset();
     std::lock_guard<std::mutex> l(mtx); state.running = false;
@@ -182,6 +189,9 @@ void pickRuntime() {
     std::string active = regStr(HKEY_LOCAL_MACHINE, "SOFTWARE\\Khronos\\OpenXR\\1", "ActiveRuntime");
     vrlog::write("xr: Windows active OpenXR runtime: %s", active.empty() ? "(none)" : active.c_str());
     vrlog::write("xr: GTA5VR.ini runtime=%s; SteamVR running: %s", rt, processRunning("vrserver.exe") ? "yes" : "no");
+    if (GetPrivateProfileIntA("vr", "stereo", -1, ini.c_str()) < 0) WritePrivateProfileStringA("vr", "stereo", "0", ini.c_str());
+    g_stereo = GetPrivateProfileIntA("vr", "stereo", 0, ini.c_str()) != 0;
+    vrlog::write("xr: mode %s (GTA5VR.ini stereo=%d)", g_stereo ? "stereo (alternate eye, experimental)" : "mono (same image both eyes, stable)", g_stereo ? 1 : 0);
     if (_stricmp(rt, "system") == 0) return;
     std::string j = findSteamVrJson();
     if (j.empty()) { vrlog::write("xr: SteamVR not found - using the Windows active runtime"); return; }
@@ -296,24 +306,27 @@ void onPresent(ID3D11DeviceContext* ctx, ID3D11Texture2D* bb) {
 
     int eye;
     { std::lock_guard<std::mutex> l(mtx); eye = state.renderEye; }   // the eye this frame was rendered for
-    // copy this frame into its eye
+    // stereo: this frame goes into its eye; mono: the same frame goes into both eyes
+    for (int target = 0; target < 2; ++target) {
+    if (g_stereo && target != eye) continue;
     uint32_t idx; XrSwapchainImageAcquireInfo ai{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
-    XrResult ar = xrAcquireSwapchainImage(sc[eye], &ai, &idx);
+    XrResult ar = xrAcquireSwapchainImage(sc[target], &ai, &idx);
     if (XR_FAILED(ar)) { ++st.acqFail; st.lastErr = ar; }
     if (XR_SUCCEEDED(ar)) {
         XrSwapchainImageWaitInfo w{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO}; w.timeout = 100000000;   // 100 ms
         XrResult wr = XR_TIMEOUT_EXPIRED;
-        for (int t = 0; t < 10 && wr == XR_TIMEOUT_EXPIRED; ++t) wr = xrWaitSwapchainImage(sc[eye], &w);   // must succeed before release
+        for (int t = 0; t < 10 && wr == XR_TIMEOUT_EXPIRED; ++t) wr = xrWaitSwapchainImage(sc[target], &w);   // must succeed before release
         if (wr != XR_SUCCESS) { vrlog::write("xr: swapchain image never became ready (%d) - VR switched off", (int)wr); g_fatal = true; }
         if (wr == XR_SUCCESS) {
-            float aspect = (float)vcv[eye].recommendedImageRectWidth / (float)vcv[eye].recommendedImageRectHeight;
+            float aspect = (float)vcv[target].recommendedImageRectWidth / (float)vcv[target].recommendedImageRectHeight;
             bool srgb = scFormat == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB || scFormat == DXGI_FORMAT_B8G8R8A8_UNORM_SRGB;   // GTA's image is already gamma-encoded
-            bool drawn = blit::draw(ctx, bb, scImg[eye][idx].texture, (DXGI_FORMAT)scFormat, srgb, aspect);
-            if (!drawn) { ++st.blitFail; if (frameNo < 5) vrlog::write("xr: blit failed for eye %d", eye); }
+            bool drawn = blit::draw(ctx, bb, scImg[target][idx].texture, (DXGI_FORMAT)scFormat, srgb, aspect, g_test);
+            if (!drawn) { ++st.blitFail; if (frameNo < 5) vrlog::write("xr: blit failed for eye %d", target); }
             ctx->Flush();   // hand the eye image to the GPU now: SteamVR's compositor reads it from another process
-            XrSwapchainImageReleaseInfo ri{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO}; xrReleaseSwapchainImage(sc[eye], &ri);
-            if (drawn) scHasImage[eye] = true;
+            XrSwapchainImageReleaseInfo ri{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO}; xrReleaseSwapchainImage(sc[target], &ri);
+            if (drawn) scHasImage[target] = true;
         }
+    }
     }
 
     // locate head, eyes and controllers for the next frame
@@ -330,6 +343,15 @@ void onPresent(ID3D11DeviceContext* ctx, ID3D11Texture2D* bb) {
         s.eye[e] = conv(views[e].pose, true);
         s.eyeFovDeg[e] = (views[e].fov.angleUp - views[e].fov.angleDown) * 57.29578f;
     }
+    // one symmetric square fov covering both eyes' (asymmetric) fov: the game renders a symmetric camera,
+    // so the layer must be submitted with exactly that fov or the image is stretched / swims
+    if (vs.viewStateFlags & XR_VIEW_STATE_ORIENTATION_VALID_BIT) {
+        float t = 0.f;
+        for (int e = 0; e < 2; ++e) for (float a : {views[e].fov.angleUp, -views[e].fov.angleDown, views[e].fov.angleRight, -views[e].fov.angleLeft}) t = std::max(t, tanf(a));
+        if (t > 0.3f && t < 4.f) g_tanHalf = t;
+    }
+    s.fovDeg = 2.f * atanf(g_tanHalf) * 57.29578f;
+    s.stereo = g_stereo;
     for (int i = 0; i < IN_COUNT; ++i) {
         XrActionStateGetInfo g{XR_TYPE_ACTION_STATE_GET_INFO}; g.action = act[i];
         if (kInputs[i].type == XrType::Pose) {
@@ -341,14 +363,21 @@ void onPresent(ID3D11DeviceContext* ctx, ID3D11Texture2D* bb) {
             XrActionStateBoolean b{XR_TYPE_ACTION_STATE_BOOLEAN}; xrGetActionStateBoolean(sess, &g, &b); s.value[i] = b.currentState ? 1.f : 0.f;
         }
     }
-    // the eye that was just rendered keeps the view it was rendered with (only a valid tracked pose)
-    bool tracked = (vs.viewStateFlags & XR_VIEW_STATE_ORIENTATION_VALID_BIT) && poseOk(views[eye].pose);
-    if (tracked) lastView[eye] = views[eye];
+    // The image copied above was rendered by the game with the poses read LAST frame (the script thread set the
+    // camera from them), so the layer must carry those poses, not the new ones - otherwise the compositor
+    // reprojects to the wrong place and the view shakes.
+    if (poseOk(pendView[eye].pose)) lastView[eye] = pendView[eye];
+    if (!g_stereo && poseOk(pendHead)) lastHead = pendHead;
+    bool tracked = (vs.viewStateFlags & XR_VIEW_STATE_ORIENTATION_VALID_BIT) && poseOk(views[0].pose) && poseOk(views[1].pose);
+    if (tracked) { pendView[0] = views[0]; pendView[1] = views[1]; }
+    if ((hl.locationFlags & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT) && poseOk(hl.pose)) pendHead = hl.pose;
 
+    float ha = atanf(g_tanHalf);
     XrCompositionLayerProjectionView pv[2];
     for (int e = 0; e < 2; ++e) {
         pv[e] = {XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW};
-        pv[e].pose = lastView[e].pose; pv[e].fov = lastView[e].fov;
+        pv[e].pose = g_stereo ? lastView[e].pose : lastHead;
+        pv[e].fov = {-ha, ha, ha, -ha};
         pv[e].subImage.swapchain = sc[e];
         pv[e].subImage.imageRect = {{0,0},{(int32_t)vcv[e].recommendedImageRectWidth,(int32_t)vcv[e].recommendedImageRectHeight}};
     }
@@ -356,7 +385,7 @@ void onPresent(ID3D11DeviceContext* ctx, ID3D11Texture2D* bb) {
     const XrCompositionLayerBaseHeader* layers[] = {(XrCompositionLayerBaseHeader*)&layer};
     XrFrameEndInfo ei{XR_TYPE_FRAME_END_INFO}; ei.displayTime = fs.predictedDisplayTime; ei.environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
     bool both = scHasImage[0] && scHasImage[1];
-    bool poses = poseOk(lastView[0].pose) && poseOk(lastView[1].pose);   // a zero quaternion makes xrEndFrame fail
+    bool poses = g_stereo ? (poseOk(lastView[0].pose) && poseOk(lastView[1].pose)) : poseOk(lastHead);   // a zero quaternion makes xrEndFrame fail
     if (!poses) ++st.badPose;
     if (!fs.shouldRender) ++st.noRender;
     ei.layerCount = (both && poses && fs.shouldRender) ? 1 : 0; ei.layers = layers;
@@ -372,4 +401,5 @@ void onPresent(ID3D11DeviceContext* ctx, ID3D11Texture2D* bb) {
 
 VrState snapshot() { std::lock_guard<std::mutex> l(mtx); return state; }
 void shutdown() { if (inst) xrDestroyInstance(inst); inst = XR_NULL_HANDLE; }
+void toggleTestPattern() { g_test = !g_test; vrlog::write("F10: test pattern %s", g_test ? "ON (headset should show a colour gradient)" : "off"); }
 }
