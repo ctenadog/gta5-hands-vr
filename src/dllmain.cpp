@@ -62,7 +62,7 @@ void scriptMain() {
 }
 
 DWORD WINAPI boot(LPVOID) {
-    vrlog::write("GTA5VR 0.2.7 loading (Script Hook V build, story mode only)");
+    vrlog::write("GTA5VR 0.2.8 loading (Script Hook V build, story mode only)");
     // SHV may be loaded after us by the ASI loader: retry for ~30 s.
     bool ok = false;
     for (int i = 0; i < 60 && !(ok = natives::init()); ++i) Sleep(500);

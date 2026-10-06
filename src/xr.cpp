@@ -201,6 +201,16 @@ void pickRuntime() {
     g_latency = std::max(0, std::min(6, (int)GetPrivateProfileIntA("vr", "latency", 1, ini.c_str())));
     vrlog::write("xr: latency=%d frames (GTA5VR.ini latency, 0..6)", g_latency);
     vrlog::write("xr: mode %s (GTA5VR.ini stereo=%d)", g_stereo ? "stereo (alternate eye, experimental)" : "mono (same image both eyes, stable)", g_stereo ? 1 : 0);
+    // GTA started from Steam carries SteamAppId=271590 in its environment. SteamVR's client (loaded into this process)
+    // then treats us as the non-VR Steam game "GTA V" (Desktop Game Theatre) and shows "Waiting..." instead of our frames.
+    // hide_steam_id=1 (default) removes those variables before the runtime is loaded, so SteamVR sees a plain OpenXR app.
+    if (GetPrivateProfileIntA("vr", "hide_steam_id", -1, ini.c_str()) < 0) WritePrivateProfileStringA("vr", "hide_steam_id", "1", ini.c_str());
+    bool hide = GetPrivateProfileIntA("vr", "hide_steam_id", 1, ini.c_str()) != 0;
+    for (const char* n : {"SteamAppId", "SteamGameId", "SteamOverlayGameId"}) {
+        char v[64] = ""; DWORD got = GetEnvironmentVariableA(n, v, sizeof(v));
+        vrlog::write("xr: env %s=%s%s", n, got ? v : "(not set)", (got && hide) ? " -> removed for SteamVR" : "");
+        if (got && hide) SetEnvironmentVariableA(n, nullptr);
+    }
     if (_stricmp(rt, "system") == 0) return;
     std::string j = findSteamVrJson();
     if (j.empty()) { vrlog::write("xr: SteamVR not found - using the Windows active runtime"); return; }
