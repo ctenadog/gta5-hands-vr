@@ -236,7 +236,11 @@ void onPresent(ID3D11Device* dev, ID3D11DeviceContext* ctx, ID3D11Texture2D* bb)
     LONG beat = g_shm->heartbeat;
     if (beat != g_lastBeat) { g_lastBeat = beat; g_beatTime = now; }
     else if (hs >= bridge::H_READY && now - g_beatTime > 8000) { fail("GTA5VR_Host.exe stopped responding"); return; }
-    if (hs < bridge::H_READY) return;   // helper still connecting to SteamVR
+    if (hs < bridge::H_READY) {   // helper still connecting to SteamVR
+        static ULONGLONG lastWait = 0;
+        if (now - lastWait > 5000) { lastWait = now; vrlog::write("xr: waiting for the helper to connect to SteamVR (keep the headset on, do not press F8)"); }
+        return;
+    }
 
     if (!blit::init(dev)) { fail("blit init failed"); return; }
     // transport negotiation

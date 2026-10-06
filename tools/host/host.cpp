@@ -216,7 +216,10 @@ bool setup() {
     XrInstanceProperties ip{XR_TYPE_INSTANCE_PROPERTIES}; xrGetInstanceProperties(inst, &ip); L("runtime: %s", ip.runtimeName);
     XrSystemGetInfo gi{XR_TYPE_SYSTEM_GET_INFO}; gi.formFactor = XR_FORM_FACTOR_HEAD_MOUNTED_DISPLAY;
     XrResult r = XR_ERROR_FORM_FACTOR_UNAVAILABLE;
-    for (int i = 0; i < 60 && shm->want && gameAlive(); ++i) { r = xrGetSystem(inst, &gi, &sys); if (r != XR_ERROR_FORM_FACTOR_UNAVAILABLE) break; if (i == 0) L("waiting for the headset..."); Sleep(500); }
+    for (int i = 0; i < 120 && shm->want && gameAlive(); ++i) { r = xrGetSystem(inst, &gi, &sys); if (r != XR_ERROR_FORM_FACTOR_UNAVAILABLE) break; if (i % 10 == 0) L("waiting for the headset... (%d s)", i / 2); Sleep(500); }
+    if (r == XR_ERROR_FORM_FACTOR_UNAVAILABLE && !shm->want) { L("cancelled: VR was switched off (F8) while connecting"); return false; }
+    if (r == XR_ERROR_FORM_FACTOR_UNAVAILABLE && !gameAlive()) { L("cancelled: game closed while connecting"); return false; }
+    if (r == XR_SUCCESS) L("headset found");
     if (!ok(r, "xrGetSystem")) { fatal("xrGetSystem failed - headset not connected to SteamVR?"); return false; }
     XrGraphicsRequirementsD3D11KHR req{XR_TYPE_GRAPHICS_REQUIREMENTS_D3D11_KHR}; xrGetD3D11GraphicsRequirementsKHR(inst, sys, &req);
     IDXGIFactory1* fac = nullptr; IDXGIAdapter1* ad = nullptr; CreateDXGIFactory1(__uuidof(IDXGIFactory1), (void**)&fac);
@@ -303,7 +306,7 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR cmd, int) {
     SetCurrentDirectoryA(dir.c_str());
     vrlog::fileName() = "GTA5VR_Host.log";
     DWORD pid = (DWORD)strtoul(cmd ? cmd : "", nullptr, 10);
-    L("GTA5VR_Host 0.4.0 started for GTA5.exe pid %lu", (unsigned long)pid);
+    L("GTA5VR_Host 0.4.1 started for GTA5.exe pid %lu", (unsigned long)pid);
     wchar_t name[64]; bridge::shmName(pid, name, 64);
     HANDLE map = OpenFileMappingW(FILE_MAP_ALL_ACCESS, FALSE, name);
     if (!map) { L("no shared memory %ls (start this from the game with F8)", name); return 2; }
