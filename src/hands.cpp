@@ -75,6 +75,12 @@ int g_depth = 0;                 // how many dereferences lead to the matrix arr
 bool g_worldSpace = false;       // matrices hold world positions (else object space)
 bool g_found = false, g_searched = false, g_on = false, g_wantSearch = false;
 int g_handIdx[2] = {-1, -1};     // left, right bone indices
+int g_headIdx = -1;               // SKEL_Head index
+// 0.4.4: head hiding. Bones of the head/face/hair = bones whose position (at search time) is within 0.25 m of the
+// head bone and not below the neck. While hiding, their rotation/scale part is written as 0.001 (vertices collapse
+// into the bone = invisible); translation is not touched. The game rebuilds the matrices every frame, so when the
+// mod stops writing (VR off) the head is back the very next frame.
+std::vector<int> g_headBones; std::atomic<bool> g_hide{false};
 M3 g_cal[2]; bool g_calSet[2] = {false, false};
 float g_written[2][3][3]; bool g_haveWritten = false; int g_persistLog = 0;
 // Background writer: the game recomputes the skeleton after scripts run (0.2.9 log: "overwritten by the game"), so a
@@ -92,6 +98,13 @@ DWORD WINAPI writer(LPVOID) {
         if (!arr || GetTickCount64() - g_wBeat.load() > 50) { Sleep(5); continue; }
         float t[2][3][3]; bool have[2];
         { std::lock_guard<std::mutex> l(g_wMtx); memcpy(t, g_wTarget, sizeof(t)); have[0] = g_wHave[0]; have[1] = g_wHave[1]; }
+        if (g_hide.load()) {
+            std::vector<int> hb; { std::lock_guard<std::mutex> l(g_wMtx); hb = g_headBones; }
+            for (int i : hb) {
+                float* f = (float*)(arr + (uintptr_t)i * 64);
+                for (int c = 0; c < 3; ++c) for (int r = 0; r < 3; ++r) f[c * 4 + r] = (c == r) ? 0.001f : 0.f;
+            }
+        }
         for (int h = 0; h < 2; ++h) if (have[h]) {
             float* f = (float*)(arr + (uintptr_t)g_handIdx[h] * 64);
             for (int c = 0; c < 3; ++c) for (int r = 0; r < 3; ++r) f[c * 4 + r] = t[h][c][r];
@@ -163,9 +176,34 @@ void search(int ped, uintptr_t pedAddr) {
         }
     }
     if (g_found) {
+        uintptr_t arr = resolve(pedAddr);
+        int count = natives::invoke<int>(N_GET_ENTITY_BONE_COUNT, ped);
+        if (count <= 0 || count > 400) count = 200;
+        g_headIdx = bones[2].index;
+        const float* hp = (const float*)(arr + (uintptr_t)g_headIdx * 64 + 48);
+        float head[3] = {hp[0], hp[1], hp[2]};
+        std::vector<int> hb;
+        for (int i = 0; i < count; ++i) {
+            if (i == g_handIdx[0] || i == g_handIdx[1]) continue;
+            uintptr_t a = arr + (uintptr_t)i * 64;
+            if (!readable(a, 64)) break;
+            const float* t = (const float*)(a + 48);
+            float dx = t[0] - head[0], dy = t[1] - head[1], dz = t[2] - head[2];
+            if (g_worldSpace) { float w[3] = {dx, dy, dz}; dx = E.m[0][0]*w[0]+E.m[1][0]*w[1]+E.m[2][0]*w[2]; dy = E.m[0][1]*w[0]+E.m[1][1]*w[1]+E.m[2][1]*w[2]; dz = E.m[0][2]*w[0]+E.m[1][2]*w[1]+E.m[2][2]*w[2]; }
+            // fingers of a hand raised near the face at search time must not be hidden: skip bones close to a hand
+            bool nearHand = false;
+            for (int h = 0; h < 2; ++h) {
+                const float* hp2 = (const float*)(arr + (uintptr_t)g_handIdx[h] * 64 + 48);
+                float ex = t[0] - hp2[0], ey = t[1] - hp2[1], ez = t[2] - hp2[2];
+                if (ex*ex + ey*ey + ez*ez < 0.18f*0.18f) nearHand = true;
+            }
+            if (!nearHand && dx*dx + dy*dy + dz*dz < 0.25f*0.25f && dz > -0.04f) hb.push_back(i);
+        }
+        { std::lock_guard<std::mutex> l(g_wMtx); g_headBones = hb; }
+        vrlog::write("hands: %d head/face bones of %d will be hidden in VR", (int)hb.size(), count);
         char path[96]; snprintf(path, sizeof(path), "ped+0x%X", g_offs[0]);
         for (int d = 1; d < g_depth; ++d) { size_t l = strlen(path); snprintf(path + l, sizeof(path) - l, " ->+0x%X", g_offs[d]); }
-        vrlog::write("hands: FOUND bone matrices (%s space) at %s, %d candidates, %llu ms. Press F12 again to rotate hands.",
+        vrlog::write("hands: FOUND bone matrices (%s space) at %s, %d candidates, %llu ms. (F12 = hand rotation)",
             g_worldSpace ? "world" : "object", path, tested, GetTickCount64() - t0);
     }
     else vrlog::write("hands: bone matrices NOT found (%d candidates, %llu ms) - send this log", tested, GetTickCount64() - t0);
@@ -173,10 +211,20 @@ void search(int ped, uintptr_t pedAddr) {
 }
 
 namespace hands {
+void setHideHead(bool on) {
+    if (g_hide.load() == on) return;
+    g_hide = on;
+    if (on) {
+        if (!g_searched) g_wantSearch = true;
+        if (!g_wThread) g_wThread = CreateThread(nullptr, 0, writer, nullptr, 0, nullptr);
+        vrlog::write("head: hiding %s", g_found ? "on" : "on (searching the skeleton first, the game may pause for ~1 s)");
+    } else vrlog::write("head: shown again");
+}
 void toggle() {
     if (!g_found) { g_searched = false; g_wantSearch = true; vrlog::write("F12: searching the skeleton (VR must be on, stand still)..."); return; }
     g_on = !g_on; g_calSet[0] = g_calSet[1] = false; g_haveWritten = false; g_persistLog = 0;
     g_wArr = 0; { std::lock_guard<std::mutex> l(g_wMtx); g_wHave[0] = g_wHave[1] = false; }
+    if (!g_on && !g_hide.load()) g_wArr = 0;
     if (g_on && !g_wThread) g_wThread = CreateThread(nullptr, 0, writer, nullptr, 0, nullptr);
     vrlog::write("F12: hand rotation %s (hold the controllers the way the hands are held now)", g_on ? "ON" : "off");
 }
@@ -190,10 +238,23 @@ void tick(int ped, const XrPoseF3* gripLeftRight[2], float yawDeg) {
         search(ped, pedAddr);
         return;
     }
-    if (!g_on || !g_found || !pedAddr) { g_wArr = 0; return; }
+    if ((!g_on && !g_hide.load()) || !g_found || !pedAddr) { g_wArr = 0; return; }
     uintptr_t arr = resolve(pedAddr);
     M3 E; float epos[3];
-    if (!arr || !entityMatrix(pedAddr, E, epos)) { g_wArr = 0; vrlog::write("hands: path no longer valid - rotation off"); g_on = false; return; }
+    if (!arr || !entityMatrix(pedAddr, E, epos)) { g_wArr = 0; vrlog::write("hands: path no longer valid - rotation and head hiding off"); g_on = false; g_found = false; return; }
+    {   // the head bone must be where the game says (also guards the head hiding)
+        uintptr_t m = arr + (uintptr_t)g_headIdx * 64;
+        if (g_headIdx < 0 || !readable(m, 64) || !writable(m, 48)) { g_wArr = 0; vrlog::write("hands: skeleton not writable - off"); g_on = false; g_found = false; return; }
+        Vector3 w = natives::invokeV3(N_GET_WORLD_POSITION_OF_ENTITY_BONE, ped, g_headIdx);
+        float want[3] = {w.x, w.y, w.z};
+        if (!g_worldSpace) { float d[3] = {w.x - epos[0], w.y - epos[1], w.z - epos[2]}; for (int i = 0; i < 3; ++i) want[i] = E.m[0][i]*d[0] + E.m[1][i]*d[1] + E.m[2][i]*d[2]; }
+        const float* f = (const float*)m;
+        for (int i = 0; i < 3; ++i) if (!(fabsf(f[12 + i] - want[i]) < 0.15f)) {
+            g_wArr = 0; vrlog::write("hands: head bone check failed (%.2f vs %.2f) - will search again", f[12 + i], want[i]);
+            static int re = 0; g_found = false; g_searched = false; g_on = false; if (g_hide.load() && ++re <= 3) g_wantSearch = true; return;
+        }
+    }
+    if (!g_on) { g_wArr = arr; g_wBeat = GetTickCount64(); return; }   // head hiding only
     static ULONGLONG lastRate = 0;
     if (GetTickCount64() - lastRate > 5000) { lastRate = GetTickCount64(); vrlog::write("hands: background writes in the last 5 s: %u", g_wCount.exchange(0)); }
     for (int h = 0; h < 2; ++h) {

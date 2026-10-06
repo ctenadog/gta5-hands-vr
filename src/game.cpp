@@ -1,6 +1,8 @@
 // Per-frame game logic, run on the Script Hook V script thread (sheet hooks.script_tick).
 // One function per row of sheets/systems.json (in_v01 = true).
+#include <windows.h>
 #include <cmath>
+#include <string>
 #include <type_traits>
 #include "natives.h"
 #include "xr.h"
@@ -15,6 +17,7 @@ bool g_onlineBlocked = false;
 float g_yawRef = 0.f; bool g_yawRefSet = false;   // head yaw at F8/F9 = "straight ahead"
 int g_gen = 0;
 const float kDeadzone = 0.25f;
+const float kEyeForward = 0.10f;   // eyes are ~10 cm in front of the body axis (camera inside the hidden head)
 
 struct V { float x, y, z; };
 V qrot(const XrPoseF3& q, V v) {   // rotate v by quaternion q
@@ -39,12 +42,21 @@ float headYawGta(const XrPoseF3& h) { V f = qrot(h, {0,0,-1}); V g = xrToGta(f, 
 // World-locked VR frame. g_baseYaw = world heading that "straight ahead in the room" maps to; it changes only on
 // recenter (F8/F9) and right-stick turning - NOT when the character turns while walking (that made the view swing).
 float g_baseYaw = 0.f; V g_headRef{0,0,0};
+int g_veh = 0; float g_vehYawOff = 0.f;
 float frameYaw(int ped, const VrState& s) {
     if (!g_yawRefSet && s.head.valid) {
         g_yawRef = headYawGta(s.head); g_headRef = xrPos(s.head);
         g_baseYaw = natives::invoke<float>(N_GET_ENTITY_HEADING, ped);
-        g_yawRefSet = true; vrlog::write("recentered (head yaw %.1f, character heading %.1f)", g_yawRef, g_baseYaw);
+        g_yawRefSet = true; g_veh = 0; vrlog::write("recentered (head yaw %.1f, character heading %.1f)", g_yawRef, g_baseYaw);
     }
+    // 0.4.4: in a vehicle "straight ahead" turns with the vehicle (before, the view stayed world-locked and a turning car
+    // left you looking out of the side window). Snap turn changes the offset to the vehicle.
+    int veh = natives::invoke<int>(N_IS_PED_IN_ANY_VEHICLE, ped, 0) ? natives::invoke<int>(N_GET_VEHICLE_PED_IS_IN, ped, 0) : 0;
+    if (veh) {
+        float vh = natives::invoke<float>(N_GET_ENTITY_HEADING, veh);
+        if (veh != g_veh) { g_vehYawOff = g_baseYaw - vh; g_veh = veh; vrlog::write("camera: in vehicle, view now turns with it"); }
+        g_baseYaw = vh + g_vehYawOff;
+    } else if (g_veh) { g_veh = 0; vrlog::write("camera: on foot, view world-locked"); }
     return g_baseYaw - g_yawRef;   // rotation applied to every OpenXR vector
 }
 // Stable eye anchor: the character's root + eye height (+ limited room-scale offset). The head bone bobs with the
@@ -77,12 +89,21 @@ void headCamera(int ped, const VrState& s, float yaw, V anchor) {
     float roll = 0.f;
     xr::reportCameraPose(e);
     float fov = fmaxf(30.f, fminf(120.f, s.fovDeg));
+    // eyes sit a little in front of the body axis
+    { float h = camYaw * 0.0174533f; pos.x += -sinf(h) * kEyeForward; pos.y += cosf(h) * kEyeForward; }
     if (!g_cam) {
         g_cam = natives::invoke<int>(N_CREATE_CAM_WITH_PARAMS, "DEFAULT_SCRIPTED_CAMERA", pos.x, pos.y, pos.z, pitch, roll, camYaw, fov, 1, 2);
         natives::invoke(N_SET_CAM_ACTIVE, g_cam, 1);
         natives::invoke(N_RENDER_SCRIPT_CAMS, 1, 0, 0, 1, 0, 0);
+        natives::invoke(N_SET_CAM_NEAR_CLIP, g_cam, 0.05f);
+        vrlog::write("camera: created, attached to the character");
     }
-    natives::invoke(N_SET_CAM_COORD, g_cam, pos.x, pos.y, pos.z);
+    // 0.4.4: the camera is ATTACHED to the character (offset in the character's own space) instead of being moved to
+    // GET_ENTITY_COORDS every frame. Scripts run before the game moves the character, so the old way put the camera
+    // where the character was one frame ago: shaking when walking, falling behind in a car. Attached, the engine
+    // places it after the move, in the same frame.
+    Vector3 lo = natives::invokeV3(N_GET_OFFSET_FROM_ENTITY_GIVEN_WORLD_COORDS, ped, pos.x, pos.y, pos.z);
+    natives::invoke(N_ATTACH_CAM_TO_ENTITY, g_cam, ped, lo.x, lo.y, lo.z, 1);
     natives::invoke(N_SET_CAM_ROT, g_cam, pitch, roll, camYaw, 2);
     natives::invoke(N_SET_CAM_FOV, g_cam, fov);
     // GTA moves the character relative to the (hidden) gameplay camera: point it where the head looks,
@@ -125,7 +146,7 @@ void weaponAim(int ped, const VrState& s, bool inVehicle, float yaw, V anchor) {
 bool g_turnLatch = false;
 void snapTurn(const VrState& s) {
     float x = s.value[IN_TURN_X];
-    if (!g_turnLatch && fabsf(x) > 0.7f) { g_baseYaw -= (x > 0 ? 30.f : -30.f); g_turnLatch = true; }
+    if (!g_turnLatch && fabsf(x) > 0.7f) { float d = (x > 0 ? 30.f : -30.f); g_baseYaw -= d; g_vehYawOff -= d; g_turnLatch = true; }
     if (fabsf(x) < 0.3f) g_turnLatch = false;
 }
 
@@ -148,8 +169,47 @@ void controllerInput(const VrState& s, bool inVehicle) {
     }
 }
 
+// systems.head_camera, part 2: hide the character's head while VR is on, give it back when VR goes off.
+// Hats / glasses / earpieces (props 0,1,2) are taken off and put back exactly as they were.
+// The head itself is collapsed in the skeleton by hands.cpp (hands::setHideHead) - the game rebuilds it by itself
+// as soon as the mod stops writing, so VR off = head back.
+int g_propPed = 0; int g_prop[3], g_propTex[3]; bool g_propSaved = false;
+int g_hideHeadIni = -1;
+bool hideHeadEnabled() {
+    if (g_hideHeadIni < 0) {
+        char m[MAX_PATH]; GetModuleFileNameA(nullptr, m, MAX_PATH); std::string d = m; d = d.substr(0, d.find_last_of("\\/") + 1) + "GTA5VR.ini";
+        if (GetPrivateProfileIntA("vr", "hide_head", -12345, d.c_str()) == -12345) WritePrivateProfileStringA("vr", "hide_head", "1", d.c_str());
+        g_hideHeadIni = GetPrivateProfileIntA("vr", "hide_head", 1, d.c_str()) != 0 ? 1 : 0;
+        vrlog::write("camera: GTA5VR.ini hide_head=%d", g_hideHeadIni);
+    }
+    return g_hideHeadIni == 1;
+}
+void restoreProps() {
+    if (!g_propSaved) return;
+    for (int i = 0; i < 3; ++i) if (g_prop[i] >= 0) natives::invoke(N_SET_PED_PROP_INDEX, g_propPed, i, g_prop[i], g_propTex[i], 1, 0);
+    g_propSaved = false;
+    vrlog::write("head: hat/glasses put back");
+}
+void hideHead(int ped) {
+    if (!hideHeadEnabled()) return;
+    if (g_propSaved && g_propPed != ped) restoreProps();   // switched character
+    if (!g_propSaved) {
+        g_propPed = ped;
+        for (int i = 0; i < 3; ++i) {
+            g_prop[i] = natives::invoke<int>(N_GET_PED_PROP_INDEX, ped, i, 0);
+            g_propTex[i] = natives::invoke<int>(N_GET_PED_PROP_TEXTURE_INDEX, ped, i);
+            if (g_prop[i] >= 0) natives::invoke(N_CLEAR_PED_PROP, ped, i, 0);
+        }
+        g_propSaved = true;
+        vrlog::write("head: hidden (props hat %d glasses %d ears %d taken off)", g_prop[0], g_prop[1], g_prop[2]);
+    }
+    hands::setHideHead(true);
+}
+void showHead() { hands::setHideHead(false); restoreProps(); }
+
 void releaseCamera() {
-    if (g_cam) { natives::invoke(N_RENDER_SCRIPT_CAMS, 0, 0, 0, 1, 0, 0); natives::invoke(N_SET_CAM_ACTIVE, g_cam, 0); natives::invoke(N_DESTROY_CAM, g_cam, 0); g_cam = 0; }
+    showHead();
+    if (g_cam) { natives::invoke(N_DETACH_CAM, g_cam); natives::invoke(N_RENDER_SCRIPT_CAMS, 0, 0, 0, 1, 0, 0); natives::invoke(N_SET_CAM_ACTIVE, g_cam, 0); natives::invoke(N_DESTROY_CAM, g_cam, 0); g_cam = 0; }
 }
 }
 
@@ -176,6 +236,7 @@ void tick() {
     headCamera(ped, s, yaw, anchor);
     armFollow(ped, s, inVehicle, yaw, anchor);
     { const XrPoseF3* g[2] = {&s.pose[IN_LEFT_GRIP_POSE], &s.pose[IN_RIGHT_GRIP_POSE]}; hands::tick(ped, g, yaw); }
+    hideHead(ped);
     weaponAim(ped, s, inVehicle, yaw, anchor);
     controllerInput(s, inVehicle);
 }
