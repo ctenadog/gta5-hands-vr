@@ -1,10 +1,10 @@
-﻿# GTA V Hands VR installer. Finds GTA V Legacy (GTA5.exe), removes old mod files, copies GTA5VR.asi + openxr_loader.dll next to it,
+﻿# GTA V Hands VR installer. Finds GTA V Legacy (GTA5.exe), copies GTA5VR.asi + openxr_loader.dll next to it,
 # checks Script Hook V and the ASI loader. Never touches GTA Online files.
 $ErrorActionPreference = 'Stop'
 $here = if ($env:GTA5VR_HERE) { $env:GTA5VR_HERE.TrimEnd('\') } else { Split-Path -Parent $MyInvocation.MyCommand.Path }
 function Ok($p) { $p -and (Test-Path (Join-Path $p 'GTA5.exe')) }
 
-foreach ($f in 'GTA5VR.asi','openxr_loader.dll') {
+foreach ($f in 'GTA5VR.asi','openxr_loader.dll','GTA5VR_Host.exe') {
   if (-not (Test-Path (Join-Path $here $f))) {
     Write-Host "ОШИБКА: рядом с install.bat нет файла $f ($here)."
     Write-Host 'Скорее всего, вы скачали ИСХОДНЫЙ КОД (Code -> Download ZIP) - в нём нет готового мода.'
@@ -44,11 +44,12 @@ if (Test-Path (Join-Path $game 'GTA5VR.log')) { Move-Item (Join-Path $game 'GTA5
 if ((Resolve-Path $here).Path -ne (Resolve-Path $game).Path) {
 Copy-Item (Join-Path $here 'GTA5VR.asi') $game -Force
 Copy-Item (Join-Path $here 'openxr_loader.dll') $game -Force
+Copy-Item (Join-Path $here 'GTA5VR_Host.exe') $game -Force
 }
 $doc = Join-Path $game 'GTA5VR'; New-Item -ItemType Directory -Force $doc | Out-Null
 foreach ($r in 'GTA5VR-README.txt','README_RU.txt') { if (Test-Path (Join-Path $here $r)) { Copy-Item (Join-Path $here $r) $doc -Force } }
 if (Test-Path (Join-Path $here 'licenses')) { Copy-Item (Join-Path $here 'licenses') $doc -Recurse -Force }
-Write-Host 'Скопированы GTA5VR.asi и openxr_loader.dll.'
+Write-Host 'Скопированы GTA5VR.asi, GTA5VR_Host.exe и openxr_loader.dll.'
 
 $miss = $false
 if (-not (Test-Path (Join-Path $game 'ScriptHookV.dll'))) {
@@ -60,6 +61,6 @@ if (-not $asiLoader) { Write-Host 'НЕ ХВАТАЕТ: dinput8.dll (загру�
 
 Write-Host ''
 if ($miss) { Write-Host 'Скопируйте недостающие файлы, затем запустите Pico Connect, потом GTA V (сюжетный режим) и нажмите F8.' }
-else { Write-Host 'Готово. Запустите Pico Connect (среда OpenXR), потом GTA V (сюжетный режим) и нажмите F8. Лог: GTA5VR.log' }
+else { Write-Host 'Готово. Запустите Pico Connect (среда OpenXR), потом GTA V (сюжетный режим) и нажмите F8. Логи: GTA5VR.log и GTA5VR_Host.log' }
 Write-Host 'Только сюжетный режим. Не используйте моды в GTA Online.'
 Write-Host 'Инструкция: README_RU.txt'

@@ -48,7 +48,7 @@ while (-not $game) {
   if (Ok $g) { $game = $g } else { Say "В папке '$g' нет GTA5.exe. (GTA V Enhanced не поддерживается.)" }
 }
 $game = (Resolve-Path $game).Path
-while (Get-Process -Name 'GTA5','GTAVLauncher','PlayGTAV' -ErrorAction SilentlyContinue) {
+while (Get-Process -Name 'GTA5','GTAVLauncher','PlayGTAV','GTA5VR_Host' -ErrorAction SilentlyContinue) {
   Read-Host 'GTA V запущена - закройте игру и нажмите Enter (иначе старые файлы не удалить)' | Out-Null
 }
 $gameVer = (Get-Item (Join-Path $game 'GTA5.exe')).VersionInfo.FileVersion
@@ -93,6 +93,9 @@ function Remove-OldMod {
   # сам мод (в корне и в папках, откуда ASI-загрузчики тоже грузят .asi - иначе мод загрузится дважды)
   foreach ($d in $game, (Join-Path $game 'scripts'), (Join-Path $game 'plugins'), (Join-Path $game 'asi')) { Remove-Old (Join-Path $d 'GTA5VR.asi') }
   Remove-Old (Join-Path $game 'openxr_loader.dll')
+  Remove-Old (Join-Path $game 'GTA5VR_Host.exe')
+  $hl = Join-Path $game 'GTA5VR_Host.log'
+  if (Test-Path -LiteralPath $hl) { Move-Item -LiteralPath $hl (Join-Path $game 'GTA5VR_Host.old.log') -Force }
   Remove-Old (Join-Path $game 'GTA5VR')
   # старый лог сохраняем под другим именем, чтобы новый был чистым
   $log = Join-Path $game 'GTA5VR.log'
@@ -166,10 +169,12 @@ Remove-OldMod
 Step '4/4 Копирую мод в папку игры'
 Copy-Item (Join-Path $modDir 'GTA5VR.asi') $game -Force
 Copy-Item (Join-Path $modDir 'openxr_loader.dll') $game -Force
+Copy-Item (Join-Path $modDir 'GTA5VR_Host.exe') $game -Force
+if (Test-Path (Join-Path $modDir 'xrtest.exe')) { Copy-Item (Join-Path $modDir 'xrtest.exe') $game -Force }
 $doc = Join-Path $game 'GTA5VR'; New-Item -ItemType Directory -Force $doc | Out-Null
 foreach ($r in 'GTA5VR-README.txt','README_RU.txt') { if (Test-Path (Join-Path $modDir $r)) { Copy-Item (Join-Path $modDir $r) $doc -Force } }
 if (Test-Path (Join-Path $modDir 'licenses')) { Copy-Item (Join-Path $modDir 'licenses') $doc -Recurse -Force }
-Say 'Скопированы GTA5VR.asi и openxr_loader.dll.'
+Say 'Скопированы GTA5VR.asi, GTA5VR_Host.exe и openxr_loader.dll.'
 
 # скачанные архивы мода в "Загрузках" больше не нужны (иначе можно случайно поставить старую версию)
 Get-ChildItem $dl -Filter 'GTA5VR-*.zip' -ErrorAction SilentlyContinue | ForEach-Object { Remove-Item $_.FullName -Force -ErrorAction SilentlyContinue; Say "Удалён старый архив из Загрузок: $($_.Name)" }
@@ -181,5 +186,5 @@ Say '1. Запустите SteamVR и подключите шлем (Pico Connec
 Say '2. Запустите GTA V, выберите СЮЖЕТНЫЙ режим.'
 Say '3. Посмотрите прямо и нажмите F8 - включить/выключить VR. F9 - сбросить направление.'
 Say '   F10 - тестовый цвет в шлеме, F11 - руки вкл/выкл. Все возможности: GTA5VR\README_RU.txt'
-Say "Лог: $game\GTA5VR.log - пришлите его, если что-то не работает."
+Say "Лог: $game\GTA5VR.log и $game\GTA5VR_Host.log - пришлите оба, если что-то не работает."
 Say 'Только сюжетный режим. Не используйте моды в GTA Online.'
