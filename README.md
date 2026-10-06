@@ -5,16 +5,28 @@ the right controller aims, the trigger fires. Script Hook V + OpenXR (Pico via P
 
 > Work in progress: this build has never been run in the game or a headset yet. Expect bugs; send `GTA5VR.log`.
 
-## Установка (RU)
-1. Скачайте Script Hook V: https://www.dev-c.com/gtav/scripthookv/ — скопируйте `ScriptHookV.dll` и `dinput8.dll` в папку с `GTA5.exe`.
-2. Скачайте `GTA5VR-0.2.0.zip` из **Releases → latest** (справа на странице репозитория), распакуйте.
-3. Запустите `install.bat` — он сам найдёт GTA V и скопирует `GTA5VR.asi` и `openxr_loader.dll`.
+## Установка (RU) — одним скриптом
+1. Откройте **Releases → latest**: https://github.com/ctenadog/gta5-hands-vr/releases/tag/latest
+2. В разделе **Assets** скачайте **`setup.bat`** и запустите его двойным щелчком
+   (если Windows предупредит — «Подробнее» → «Выполнить в любом случае»).
+3. Скрипт сам найдёт GTA V, скачает мод и Script Hook V и скопирует в папку игры
+   `GTA5VR.asi`, `openxr_loader.dll`, `ScriptHookV.dll`, `dinput8.dll`.
+   Если сайт Script Hook V не даст скачать автоматически — откроется браузер, нажмите **Download**,
+   скрипт сам заберёт файл из «Загрузок».
 4. Запустите Pico Connect (сделайте его OpenXR-рантаймом), затем GTA V в сюжетном режиме, нажмите **F8**.
+
+Не скачивайте «Code → Download ZIP» / «Source code» — там исходники, а не готовый мод.
+Ручная установка: распакуйте `GTA5VR-0.2.0.zip` в любую папку и запустите `install.bat`;
+Script Hook V (`ScriptHookV.dll` + `dinput8.dll` из папки bin) положите рядом с `GTA5.exe` сами.
+Подробно: `README_RU.txt`.
 
 Только сюжетный режим. Не используйте моды в GTA Online — бан.
 
 ## Install (EN)
-Script Hook V (`ScriptHookV.dll` + `dinput8.dll`) next to `GTA5.exe`, then unpack the release zip and run `install.bat`.
+Easiest: download **`setup.bat`** from Releases → latest (Assets) and run it. It finds GTA V, downloads the mod
+and Script Hook V, and copies everything next to `GTA5.exe` (if dev-c.com blocks the download, a browser opens —
+click Download and the script picks the file up from Downloads).
+Manual: put Script Hook V (`ScriptHookV.dll` + `dinput8.dll`) next to `GTA5.exe`, unpack the release zip, run `install.bat`.
 Start Pico Connect / SteamVR first, then GTA V story mode, press F8.
 
 ## Build

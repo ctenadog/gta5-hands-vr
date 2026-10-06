@@ -2,7 +2,9 @@ GTA V Hands VR 0.2.0 (DEV, untested) - story mode only
 =====================================================
 Head-tracked first-person VR for GTA V Legacy: your arms follow the controllers, right controller aims, trigger fires.
 
-REQUIRED (manual, Melty cannot install it):
+EASIEST: run setup.bat - it finds GTA V, downloads Script Hook V and installs everything.
+
+REQUIRED (setup.bat installs it, or do it manually):
   Script Hook V by Alexander Blade - https://www.dev-c.com/gtav/scripthookv/
   Copy ScriptHookV.dll and dinput8.dll (from its bin folder) into the GTA V folder (next to GTA5.exe).
   Script Hook V must match your game version; after a game update wait for an SHV update.
