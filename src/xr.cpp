@@ -39,7 +39,7 @@ HANDLE g_fmap = nullptr; uint8_t* g_frm = nullptr;
 ID3D11Texture2D* g_cpuRt = nullptr;     // CPU path: blit target before the staging copy
 uint32_t g_w = 0, g_h = 0;
 LONG g_lastBeat = 0; ULONGLONG g_beatTime = 0;
-ULONGLONG g_lastStat = 0; unsigned g_frames = 0, g_handed = 0, g_busy = 0;
+ULONGLONG g_lastStat = 0, g_lastHanded = 0; int g_justQueued = -1; unsigned g_frames = 0, g_handed = 0, g_busy = 0;
 
 std::string gameDir() { char m[MAX_PATH]; GetModuleFileNameA(nullptr, m, MAX_PATH); std::string s = m; return s.substr(0, s.find_last_of("\\/") + 1); }
 
@@ -71,7 +71,7 @@ bool ensureShm() {
 
 void releaseTransport() {
     if (g_km) { rel(g_km); }
-    rel(g_tex); rel(g_cpuRt); rel(g_stage[0]); rel(g_stage[1]); g_stageFull[0] = g_stageFull[1] = false;
+    rel(g_tex); rel(g_cpuRt); rel(g_stage[0]); rel(g_stage[1]); g_stageFull[0] = g_stageFull[1] = false; g_lastHanded = 0; g_justQueued = -1;
     if (g_nt) { CloseHandle(g_nt); g_nt = nullptr; }
     if (g_frm) { UnmapViewOfFile(g_frm); g_frm = nullptr; }
     if (g_fmap) { CloseHandle(g_fmap); g_fmap = nullptr; }
@@ -278,25 +278,35 @@ void onPresent(ID3D11Device* dev, ID3D11DeviceContext* ctx, ID3D11Texture2D* bb)
             if (d) { ++g_handed; g_renderEye ^= 1; }
         }
     } else if (g_method == bridge::M_CPU) {
-        // read back the frame copied last time (one frame of latency, no GPU stall), then queue this one
-        int prev = g_stageIdx ^ 1;
-        if (g_stageFull[prev]) {
+        // 0.4.3: read back any queued stage (older first). 0.4.2 only looked at idx^1, so one busy Map left both
+        // stages in a state where neither was read nor written again -> the headset froze on the last frame.
+        auto* fh = (bridge::FrameHdr*)g_frm;
+        for (int k = 0; k < 2; ++k) {
+            int s = (g_stageIdx + k) & 1;
+            if (!g_stageFull[s] || s == g_justQueued) continue;
             D3D11_MAPPED_SUBRESOURCE ms;
-            if (SUCCEEDED(ctx->Map(g_stage[prev], 0, D3D11_MAP_READ, D3D11_MAP_FLAG_DO_NOT_WAIT, &ms))) {
-                auto* fh = (bridge::FrameHdr*)g_frm;
+            if (SUCCEEDED(ctx->Map(g_stage[s], 0, D3D11_MAP_READ, D3D11_MAP_FLAG_DO_NOT_WAIT, &ms))) {
                 InterlockedIncrement(&fh->seq); MemoryBarrier();
                 uint8_t* dst = g_frm + bridge::kFrameHdr;
                 for (uint32_t y = 0; y < g_h; ++y) memcpy(dst + (size_t)y * g_w * 4, (uint8_t*)ms.pData + (size_t)y * ms.RowPitch, (size_t)g_w * 4);
-                memcpy(fh->pose, g_stagePose[prev], sizeof fh->pose); fh->eye = g_stageEye[prev];
+                memcpy(fh->pose, g_stagePose[s], sizeof fh->pose); fh->eye = g_stageEye[s];
                 MemoryBarrier(); InterlockedIncrement(&fh->seq);
-                ctx->Unmap(g_stage[prev], 0);
-                g_stageFull[prev] = false; ++g_handed;
+                ctx->Unmap(g_stage[s], 0);
+                g_stageFull[s] = false; ++g_handed; g_lastHanded = now;
             } else ++g_busy;
         }
-        if (!g_stageFull[g_stageIdx] && blit::draw(ctx, bb, g_cpuRt, DXGI_FORMAT_R8G8B8A8_UNORM, false, aspect, false, true)) {
-            ctx->CopyResource(g_stage[g_stageIdx], g_cpuRt);
-            memcpy(g_stagePose[g_stageIdx], pose, sizeof pose); g_stageEye[g_stageIdx] = eye;
-            g_stageFull[g_stageIdx] = true; g_stageIdx ^= 1; g_renderEye ^= 1;
+        g_justQueued = -1;
+        // watchdog: if nothing was handed over for 1 s, drop both stages and start over
+        if (g_lastHanded && now - g_lastHanded > 1000) {
+            g_stageFull[0] = g_stageFull[1] = false; g_lastHanded = now;
+            vrlog::write("xr: CPU transport stalled for 1 s - restarting the copy queue");
+        }
+        int s = !g_stageFull[g_stageIdx] ? g_stageIdx : (!g_stageFull[g_stageIdx ^ 1] ? (g_stageIdx ^ 1) : -1);
+        if (s >= 0 && blit::draw(ctx, bb, g_cpuRt, DXGI_FORMAT_R8G8B8A8_UNORM, false, aspect, false, true)) {
+            ctx->CopyResource(g_stage[s], g_cpuRt);
+            memcpy(g_stagePose[s], pose, sizeof pose); g_stageEye[s] = eye;
+            g_stageFull[s] = true; g_justQueued = s; g_stageIdx = s ^ 1; g_renderEye ^= 1;
+            if (!g_lastHanded) g_lastHanded = now;
         }
     }
     if (!g_lastStat) g_lastStat = now;

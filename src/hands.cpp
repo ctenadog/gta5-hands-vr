@@ -86,7 +86,7 @@ std::atomic<uintptr_t> g_wArr{0}; std::atomic<ULONGLONG> g_wBeat{0}; std::mutex 
 float g_wTarget[2][3][3]; bool g_wHave[2] = {false, false}; std::atomic<unsigned> g_wCount{0};
 HANDLE g_wThread = nullptr;
 DWORD WINAPI writer(LPVOID) {
-    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);   // 0.4.3: was ABOVE_NORMAL + hot spin, starved the frame copy
     for (;;) {
         uintptr_t arr = g_wArr.load();
         if (!arr || GetTickCount64() - g_wBeat.load() > 50) { Sleep(5); continue; }
@@ -97,7 +97,8 @@ DWORD WINAPI writer(LPVOID) {
             for (int c = 0; c < 3; ++c) for (int r = 0; r < 3; ++r) f[c * 4 + r] = t[h][c][r];
         }
         g_wCount.fetch_add(1);
-        for (int i = 0; i < 200; ++i) YieldProcessor();   // ~tens of microseconds between writes
+        for (int i = 0; i < 200; ++i) YieldProcessor();
+        if ((g_wCount.load() & 63) == 0) Sleep(0);   // 0.4.3: give the core back regularly
     }
 }
 
