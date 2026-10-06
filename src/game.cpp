@@ -9,7 +9,7 @@
 
 namespace {
 int  g_cam = 0;
-bool g_enabled = true;
+bool g_enabled = false;   // VR starts OFF: press F8 in story mode
 bool g_onlineBlocked = false;
 float g_yawRef = 0.f; bool g_yawRefSet = false;
 
@@ -113,7 +113,8 @@ void releaseCamera() {
 }
 
 namespace game {
-void toggle() { g_enabled = !g_enabled; vrlog::write("VR %s", g_enabled ? "on" : "off"); }
+void toggle() { g_enabled = !g_enabled; vrlog::write("F8: VR %s", g_enabled ? "on" : "off"); }
+bool enabled() { return g_enabled; }
 
 void tick() {
     if (!natives::ready()) return;

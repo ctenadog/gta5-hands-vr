@@ -14,16 +14,27 @@ bool g_sessionTried = false;
 bool g_xrOk = false;
 
 // sheet hooks.present: SHV calls this on every IDXGISwapChain::Present
+// Nothing VR happens until the player presses F8 in story mode: no OpenXR session in menus or loading screens,
+// so the game is never throttled by the headset before that.
 void onPresent(void* swapChain) {
     if (!g_xrOk) return;
+    bool want = game::enabled();
+    xr::setWanted(want);
+    if (!want) { if (xr::hasSession()) xr::poll(); return; }
     auto* sw = static_cast<IDXGISwapChain*>(swapChain);
     ID3D11Device* dev = nullptr;
     if (FAILED(sw->GetDevice(__uuidof(ID3D11Device), (void**)&dev))) return;
-    if (!g_sessionTried) { g_sessionTried = true; xr::startSession(dev); }
-    ID3D11DeviceContext* ctx = nullptr; ID3D11Texture2D* bb = nullptr;
+    ID3D11Texture2D* bb = nullptr;
+    if (FAILED(sw->GetBuffer(0, __uuidof(ID3D11Texture2D), (void**)&bb))) { dev->Release(); return; }
+    if (!g_sessionTried) {
+        g_sessionTried = true;
+        D3D11_TEXTURE2D_DESC d; bb->GetDesc(&d);
+        if (!xr::startSession(dev, d.Format)) vrlog::write("VR session could not start - see errors above");
+    }
+    ID3D11DeviceContext* ctx = nullptr;
     dev->GetImmediateContext(&ctx);
-    if (SUCCEEDED(sw->GetBuffer(0, __uuidof(ID3D11Texture2D), (void**)&bb))) { xr::onPresent(ctx, bb); bb->Release(); }
-    ctx->Release(); dev->Release();
+    xr::onPresent(ctx, bb);
+    bb->Release(); ctx->Release(); dev->Release();
 }
 
 // sheet hooks.script_tick: SHV runs this as a game script (natives are legal here)
@@ -37,7 +48,7 @@ void scriptMain() {
 }
 
 DWORD WINAPI boot(LPVOID) {
-    vrlog::write("GTA5VR 0.2.0 loading (Script Hook V build, story mode only)");
+    vrlog::write("GTA5VR 0.2.1 loading (Script Hook V build, story mode only)");
     // SHV may be loaded after us by the ASI loader: retry for ~30 s.
     bool ok = false;
     for (int i = 0; i < 60 && !(ok = natives::init()); ++i) Sleep(500);

@@ -26,7 +26,7 @@ XRFN(xrWaitFrame) XRFN(xrBeginFrame) XRFN(xrEndFrame) XRFN(xrLocateViews) XRFN(x
 XRFN(xrAcquireSwapchainImage) XRFN(xrWaitSwapchainImage) XRFN(xrReleaseSwapchainImage)
 XRFN(xrStringToPath) XRFN(xrCreateActionSet) XRFN(xrCreateAction) XRFN(xrSuggestInteractionProfileBindings)
 XRFN(xrAttachSessionActionSets) XRFN(xrSyncActions) XRFN(xrGetActionStateFloat) XRFN(xrGetActionStateBoolean)
-XRFN(xrCreateActionSpace) XRFN(xrDestroyInstance) XRFN(xrGetD3D11GraphicsRequirementsKHR)
+XRFN(xrCreateActionSpace) XRFN(xrDestroyInstance) XRFN(xrGetD3D11GraphicsRequirementsKHR) XRFN(xrRequestExitSession)
 #undef XRFN
 
 XrInstance inst = XR_NULL_HANDLE; XrSystemId sys = 0; XrSession sess = XR_NULL_HANDLE;
@@ -37,6 +37,9 @@ XrActionSet aset = XR_NULL_HANDLE; XrAction act[IN_COUNT] = {}; XrSpace actSpace
 XrView lastView[2] = {{XR_TYPE_VIEW},{XR_TYPE_VIEW}};
 bool scHasImage[2] = {};
 bool sessionRunning = false;
+bool wantRunning = false;          // F8: VR on. Session is begun only while this is true.
+bool exitRequested = false;
+XrSessionState lastState = XR_SESSION_STATE_UNKNOWN;
 std::mutex mtx; VrState state{};
 uint64_t frameNo = 0;
 
@@ -66,18 +69,29 @@ bool createActions() {
     return true;
 }
 
+void beginIfReady() {
+    if (!wantRunning || sessionRunning || lastState != XR_SESSION_STATE_READY) return;
+    XrSessionBeginInfo bi{XR_TYPE_SESSION_BEGIN_INFO}; bi.primaryViewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
+    sessionRunning = ok(xrBeginSession(sess, &bi), "xrBeginSession");
+    if (sessionRunning) { exitRequested = false; vrlog::write("xr: session begun (VR on)"); }
+}
+
 void pollEvents() {
+    if (!inst) return;
     XrEventDataBuffer ev{XR_TYPE_EVENT_DATA_BUFFER};
     while (xrPollEvent(inst, &ev) == XR_SUCCESS) {
         if (ev.type == XR_TYPE_EVENT_DATA_SESSION_STATE_CHANGED) {
             auto* s = reinterpret_cast<XrEventDataSessionStateChanged*>(&ev);
-            if (s->state == XR_SESSION_STATE_READY) {
-                XrSessionBeginInfo bi{XR_TYPE_SESSION_BEGIN_INFO}; bi.primaryViewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
-                sessionRunning = ok(xrBeginSession(sess, &bi), "xrBeginSession");
-            } else if (s->state == XR_SESSION_STATE_STOPPING) { xrEndSession(sess); sessionRunning = false; }
+            lastState = s->state;
+            vrlog::write("xr: session state %d", (int)s->state);
+            if (s->state == XR_SESSION_STATE_STOPPING) {
+                xrEndSession(sess); sessionRunning = false; scHasImage[0] = scHasImage[1] = false;
+                vrlog::write("xr: session ended (VR off)");
+            }
         }
         ev = {XR_TYPE_EVENT_DATA_BUFFER};
     }
+    beginIfReady();
 }
 }
 
@@ -99,7 +113,7 @@ bool loadLoader() {
     L(xrBeginFrame) L(xrEndFrame) L(xrLocateViews) L(xrLocateSpace) L(xrAcquireSwapchainImage) L(xrWaitSwapchainImage)
     L(xrReleaseSwapchainImage) L(xrStringToPath) L(xrCreateActionSet) L(xrCreateAction) L(xrSuggestInteractionProfileBindings)
     L(xrAttachSessionActionSets) L(xrSyncActions) L(xrGetActionStateFloat) L(xrGetActionStateBoolean) L(xrCreateActionSpace)
-    L(xrDestroyInstance) L(xrGetD3D11GraphicsRequirementsKHR)
+    L(xrDestroyInstance) L(xrGetD3D11GraphicsRequirementsKHR) L(xrRequestExitSession)
 #undef L
     XrSystemGetInfo gi{XR_TYPE_SYSTEM_GET_INFO}; gi.formFactor = XR_FORM_FACTOR_HEAD_MOUNTED_DISPLAY;
     if (!ok(xrGetSystem(inst, &gi, &sys), "xrGetSystem (headset connected?)")) return false;
@@ -107,7 +121,7 @@ bool loadLoader() {
     return createActions();
 }
 
-bool startSession(ID3D11Device* dev) {
+bool startSession(ID3D11Device* dev, DXGI_FORMAT bbFormat) {
     XrGraphicsRequirementsD3D11KHR req{XR_TYPE_GRAPHICS_REQUIREMENTS_D3D11_KHR};
     xrGetD3D11GraphicsRequirementsKHR(inst, sys, &req);   // required call before xrCreateSession
     XrGraphicsBindingD3D11KHR gb{XR_TYPE_GRAPHICS_BINDING_D3D11_KHR}; gb.device = dev;
@@ -116,11 +130,17 @@ bool startSession(ID3D11Device* dev) {
     XrReferenceSpaceCreateInfo rs{XR_TYPE_REFERENCE_SPACE_CREATE_INFO}; rs.poseInReferenceSpace.orientation.w = 1;
     rs.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_LOCAL; xrCreateReferenceSpace(sess, &rs, &stage);
     rs.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_VIEW;  xrCreateReferenceSpace(sess, &rs, &viewSpace);
+    // CopySubresourceRegion needs the same format family as GTA's backbuffer
+    int64_t fmt = DXGI_FORMAT_R8G8B8A8_UNORM;
+    { uint32_t fc = 0; xrEnumerateSwapchainFormats(sess, 0, &fc, nullptr); std::vector<int64_t> f(fc);
+      xrEnumerateSwapchainFormats(sess, fc, &fc, f.data());
+      for (auto x : f) if (x == bbFormat) { fmt = x; break; } }
+    vrlog::write("xr: backbuffer format %d, swapchain format %d", (int)bbFormat, (int)fmt);
     uint32_t n = 2; xrEnumerateViewConfigurationViews(inst, sys, XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO, 2, &n, vcv);
     for (int e = 0; e < 2; ++e) {
         XrSwapchainCreateInfo sci{XR_TYPE_SWAPCHAIN_CREATE_INFO};
         sci.usageFlags = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT | XR_SWAPCHAIN_USAGE_TRANSFER_DST_BIT;
-        sci.format = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB; sci.sampleCount = 1;
+        sci.format = fmt; sci.sampleCount = 1;
         sci.width = vcv[e].recommendedImageRectWidth; sci.height = vcv[e].recommendedImageRectHeight;
         sci.faceCount = 1; sci.arraySize = 1; sci.mipCount = 1;
         if (!ok(xrCreateSwapchain(sess, &sci, &sc[e]), "xrCreateSwapchain")) return false;
@@ -138,9 +158,17 @@ bool startSession(ID3D11Device* dev) {
     return true;
 }
 
+void setWanted(bool on) {
+    wantRunning = on;
+    if (!sess) return;
+    if (!on && sessionRunning && !exitRequested) { exitRequested = true; ok(xrRequestExitSession(sess), "xrRequestExitSession"); }
+}
+bool hasSession() { return sess != XR_NULL_HANDLE; }
+void poll() { pollEvents(); }
+
 void onPresent(ID3D11DeviceContext* ctx, ID3D11Texture2D* bb) {
     pollEvents();
-    if (!sessionRunning) return;
+    if (!sessionRunning) { std::lock_guard<std::mutex> l(mtx); state.running = false; return; }
     XrFrameState fs{XR_TYPE_FRAME_STATE}; XrFrameWaitInfo wi{XR_TYPE_FRAME_WAIT_INFO};
     if (XR_FAILED(xrWaitFrame(sess, &wi, &fs))) return;
     XrFrameBeginInfo bi{XR_TYPE_FRAME_BEGIN_INFO}; xrBeginFrame(sess, &bi);
@@ -150,7 +178,7 @@ void onPresent(ID3D11DeviceContext* ctx, ID3D11Texture2D* bb) {
     // copy this frame into its eye
     uint32_t idx; XrSwapchainImageAcquireInfo ai{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
     if (XR_SUCCEEDED(xrAcquireSwapchainImage(sc[eye], &ai, &idx))) {
-        XrSwapchainImageWaitInfo w{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO}; w.timeout = XR_INFINITE_DURATION;
+        XrSwapchainImageWaitInfo w{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO}; w.timeout = 100000000;   // 100 ms, never hang the game
         xrWaitSwapchainImage(sc[eye], &w);
         D3D11_TEXTURE2D_DESC sd; bb->GetDesc(&sd);
         D3D11_BOX box{0,0,0, (UINT)std::min<uint32_t>(sd.Width, vcv[eye].recommendedImageRectWidth), (UINT)std::min<uint32_t>(sd.Height, vcv[eye].recommendedImageRectHeight), 1};
