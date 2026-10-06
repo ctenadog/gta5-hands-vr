@@ -29,7 +29,7 @@ o.append("};")
 st={r['name']:r['value'] for r in S['settings']['rows']}
 o.append(f'static const char* kTargetBuild="{st["target_game_build"]}";')
 o.append(f'static const float kWorldScale={st["world_scale"]}f, kAimRay={st["aim_ray_length"]}f, kTrigger={st["trigger_threshold"]}f;')
+o.append(f'static const float kEyeHeight={st["eye_height"]}f;')
 o.append(f'static const int kHeadBone={st["head_bone_id"]}; static const int kToggleVk=0x77; // {st["toggle_key"]}')
-os.makedirs('src/generated',exist_ok=True)
 open('src/generated/sheets.h','w').write("\n".join(o)+"\n")
 print("generated",len(o),"lines")

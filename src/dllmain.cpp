@@ -50,17 +50,18 @@ void onPresent(void* swapChain) {
 
 // sheet hooks.script_tick: SHV runs this as a game script (natives are legal here)
 void scriptMain() {
-    vrlog::write("script thread started (SHV game version id %d); F8 toggles VR, F9 recenters", shv::gameVersion());
+    vrlog::write("script thread started (SHV game version id %d); F8 toggles VR, F9 recenters, F10 test pattern", shv::gameVersion());
     for (;;) {
         if (GetAsyncKeyState(kToggleVk) & 1) game::toggle();
         if (GetAsyncKeyState(VK_F9) & 1) game::recenter();
+        if (GetAsyncKeyState(VK_F10) & 1) xr::toggleTestPattern();
         game::tick();
         shv::wait(0);
     }
 }
 
 DWORD WINAPI boot(LPVOID) {
-    vrlog::write("GTA5VR 0.2.4 loading (Script Hook V build, story mode only)");
+    vrlog::write("GTA5VR 0.2.5 loading (Script Hook V build, story mode only)");
     // SHV may be loaded after us by the ASI loader: retry for ~30 s.
     bool ok = false;
     for (int i = 0; i < 60 && !(ok = natives::init()); ++i) Sleep(500);

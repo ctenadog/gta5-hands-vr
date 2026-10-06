@@ -11,7 +11,9 @@ struct VrState {
     float    eyeFovDeg[2];      // vertical fov per eye
     XrPoseF3 pose[IN_COUNT];    // pose actions (grip/aim)
     float    value[IN_COUNT];   // float/bool actions
-    int      renderEye;         // which eye the NEXT game frame must be rendered for (AER)
+    int      renderEye;         // which eye the NEXT game frame must be rendered for (AER, stereo mode only)
+    float    fovDeg;            // symmetric vertical fov the game camera must use (both modes)
+    bool     stereo;            // false = mono: one camera at the head centre, same image to both eyes
     bool     running;
 };
 
@@ -26,4 +28,5 @@ void poll();                                         // pump OpenXR events witho
 void onPresent(ID3D11DeviceContext* ctx, ID3D11Texture2D* backbuffer); // submits this frame to its eye
 VrState snapshot();                                  // copy for the script thread
 void shutdown();
+void toggleTestPattern();                            // F10: colour test image instead of the game
 }

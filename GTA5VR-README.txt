@@ -1,4 +1,4 @@
-GTA V Hands VR 0.2.2 (DEV, untested) - story mode only
+GTA V Hands VR 0.2.5 (DEV, untested) - story mode only
 =====================================================
 Head-tracked first-person VR for GTA V Legacy: your arms follow the controllers, right controller aims, trigger fires.
 
@@ -13,8 +13,10 @@ Headset: Pico 4 / Pico Neo via Pico Connect (or Streaming Assistant) or SteamVR.
 The mod uses SteamVR by default (even if another OpenXR runtime is active). GTA5VR.ini: runtime=system to use the Windows active runtime.
 Start SteamVR with the headset connected before pressing F8.
 
-Controls: F8 toggle VR (look straight ahead), F9 recenter. Left stick move, right trigger fire, left trigger aim, A jump, B enter/exit vehicle,
+Controls: F8 toggle VR (look straight ahead), F9 recenter, F10 headset test pattern, right stick snap turn.
+Left stick move, right trigger fire, left trigger aim, A jump, B enter/exit vehicle,
 X reload, left stick click sprint. In cars: head look + buttons (two-hand steering planned).
+GTA5VR.ini: stereo=0 mono (default, stable), stereo=1 alternate-eye stereo (experimental).
 
 Story mode only. Script Hook V refuses GTA Online; the mod also switches off in any online session.
 Using mods in GTA Online can get your account banned - do not.

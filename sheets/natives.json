@@ -1,13 +1,7 @@
 {
  "sheet": "natives",
  "note": "hash = original nativedb hash. Script Hook V maps it to the running game build, so no per-build hashes are needed.",
- "columns": [
-  "name",
-  "hash",
-  "args",
-  "ret",
-  "verified"
- ],
+ "columns": ["name", "hash", "args", "ret", "verified"],
  "rows": [
   {"name": "PLAYER_PED_ID", "hash": "0xD80958FC74E988A6", "args": "none", "ret": "int", "verified": false},
   {"name": "GET_ENTITY_COORDS", "hash": "0x3FEF770D40960D5A", "args": "int entity, int alive", "ret": "Vector3", "verified": false},
@@ -26,6 +20,7 @@
   {"name": "NETWORK_IS_SESSION_STARTED", "hash": "0x9DE624D2FC4B603F", "args": "none", "ret": "int", "verified": false},
   {"name": "DESTROY_CAM", "hash": "0x865908C81A2C22E9", "args": "int cam, int scriptHostCam", "ret": "void", "verified": false},
   {"name": "IS_PAUSE_MENU_ACTIVE", "hash": "0xB0034A223497FFCB", "args": "none", "ret": "int", "verified": false},
-  {"name": "GET_IS_LOADING_SCREEN_ACTIVE", "hash": "0x10D0A8F259E93EC9", "args": "none", "ret": "int", "verified": false}
+  {"name": "GET_IS_LOADING_SCREEN_ACTIVE", "hash": "0x10D0A8F259E93EC9", "args": "none", "ret": "int", "verified": false},
+  {"name": "SET_GAMEPLAY_CAM_RELATIVE_HEADING", "hash": "0xB4EC2312F4E5B1F1", "args": "float heading", "ret": "void", "verified": false}
  ]
 }

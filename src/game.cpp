@@ -35,10 +35,25 @@ float len(V a) { return sqrtf(a.x*a.x + a.y*a.y + a.z*a.z); }
 V boneCoords(int ped, int bone) { Vector3 r = natives::invokeV3(N_GET_PED_BONE_COORDS, ped, bone, 0.f, 0.f, 0.f); return {r.x, r.y, r.z}; }
 
 float headYawGta(const XrPoseF3& h) { V f = qrot(h, {0,0,-1}); V g = xrToGta(f, 0.f); return atan2f(-g.x, g.y) * 57.29578f; }
-// ped heading minus the head yaw at recenter: looking "straight ahead" in the headset = where the character faces
-float baseHeading(int ped, const VrState& s) {
-    if (!g_yawRefSet && s.head.valid) { g_yawRef = headYawGta(s.head); g_yawRefSet = true; vrlog::write("recentered (head yaw %.1f)", g_yawRef); }
-    return natives::invoke<float>(N_GET_ENTITY_HEADING, ped) - g_yawRef;
+// World-locked VR frame. g_baseYaw = world heading that "straight ahead in the room" maps to; it changes only on
+// recenter (F8/F9) and right-stick turning - NOT when the character turns while walking (that made the view swing).
+float g_baseYaw = 0.f; V g_headRef{0,0,0};
+float frameYaw(int ped, const VrState& s) {
+    if (!g_yawRefSet && s.head.valid) {
+        g_yawRef = headYawGta(s.head); g_headRef = xrPos(s.head);
+        g_baseYaw = natives::invoke<float>(N_GET_ENTITY_HEADING, ped);
+        g_yawRefSet = true; vrlog::write("recentered (head yaw %.1f, character heading %.1f)", g_yawRef, g_baseYaw);
+    }
+    return g_baseYaw - g_yawRef;   // rotation applied to every OpenXR vector
+}
+// Stable eye anchor: the character's root + eye height (+ limited room-scale offset). The head bone bobs with the
+// walk animation, and anchoring the camera to it made the view and the arms shake.
+V eyeAnchor(int ped, const VrState& s, float yaw) {
+    Vector3 r = natives::invokeV3(N_GET_ENTITY_COORDS, ped, 1);
+    V off = xrToGta(sub(xrPos(s.head), g_headRef), yaw);
+    float l = sqrtf(off.x*off.x + off.y*off.y); if (l > 0.4f) { off.x *= 0.4f / l; off.y *= 0.4f / l; }
+    off.z = fmaxf(-0.6f, fminf(0.3f, off.z));
+    return {r.x + off.x, r.y + off.y, r.z + kEyeHeight + off.z};
 }
 
 // systems.online_guard
@@ -49,55 +64,64 @@ bool onlineGuard() {
     return !online;
 }
 
-// systems.head_camera: scripted camera at the head bone, rotated by the eye this frame renders.
-void headCamera(int ped, const VrState& s) {
-    float heading = baseHeading(ped, s);
-    const XrPoseF3& e = s.eye[s.renderEye];
-    V head = boneCoords(ped, kHeadBone);
-    V eyeOff = xrToGta(sub(xrPos(e), xrPos(s.head)), heading);   // IPD offset only; body stays where GTA puts it
-    V pos = add(head, eyeOff);
-    // rotation from quaternion, GTA order 2 (x pitch, y roll, z yaw), degrees
+// systems.head_camera: scripted camera = the headset. Mono: head centre, same image to both eyes. Stereo: this frame's eye.
+void headCamera(int ped, const VrState& s, float yaw, V anchor) {
+    const XrPoseF3& e = s.stereo ? s.eye[s.renderEye] : s.head;
+    V pos = s.stereo ? add(anchor, xrToGta(sub(xrPos(e), xrPos(s.head)), yaw)) : anchor;
     V fwd = qrot(e, {0,0,-1}), up = qrot(e, {0,1,0});
-    V gf = xrToGta(fwd, heading), gu = xrToGta(up, heading);
-    float yaw = atan2f(-gf.x, gf.y) * 57.29578f;
+    V gf = xrToGta(fwd, yaw), gu = xrToGta(up, yaw);
+    float camYaw = atan2f(-gf.x, gf.y) * 57.29578f;
     float pitch = asinf(fmaxf(-1.f, fminf(1.f, gf.z))) * 57.29578f;
-    float roll = atan2f(-(gu.x*cosf(yaw/57.29578f) + gu.y*sinf(yaw/57.29578f)), gu.z) * 57.29578f;   // TODO verify sign in game
+    // roll: angle of the camera's up vector around the forward axis (0 when level)
+    float cy = cosf(camYaw / 57.29578f), sy = sinf(camYaw / 57.29578f);
+    V right{cy, sy, 0.f};   // GTA right vector for yaw camYaw (forward = (-sin, cos))
+    float roll = atan2f(-(gu.x*right.x + gu.y*right.y), gu.z) * 57.29578f;
+    float fov = fmaxf(30.f, fminf(120.f, s.fovDeg));
     if (!g_cam) {
-        g_cam = natives::invoke<int>(N_CREATE_CAM_WITH_PARAMS, "DEFAULT_SCRIPTED_CAMERA", pos.x, pos.y, pos.z, pitch, roll, yaw, s.eyeFovDeg[s.renderEye], 1, 2);
+        g_cam = natives::invoke<int>(N_CREATE_CAM_WITH_PARAMS, "DEFAULT_SCRIPTED_CAMERA", pos.x, pos.y, pos.z, pitch, roll, camYaw, fov, 1, 2);
         natives::invoke(N_SET_CAM_ACTIVE, g_cam, 1);
         natives::invoke(N_RENDER_SCRIPT_CAMS, 1, 0, 0, 1, 0, 0);
     }
     natives::invoke(N_SET_CAM_COORD, g_cam, pos.x, pos.y, pos.z);
-    natives::invoke(N_SET_CAM_ROT, g_cam, pitch, roll, yaw, 2);
-    natives::invoke(N_SET_CAM_FOV, g_cam, s.eyeFovDeg[s.renderEye]);
+    natives::invoke(N_SET_CAM_ROT, g_cam, pitch, roll, camYaw, 2);
+    natives::invoke(N_SET_CAM_FOV, g_cam, fov);
+    // GTA moves the character relative to the (hidden) gameplay camera: point it where the head looks,
+    // so "stick forward" = walk where you look
+    float pedH = natives::invoke<float>(N_GET_ENTITY_HEADING, ped);
+    float rel = camYaw - pedH; while (rel > 180.f) rel -= 360.f; while (rel < -180.f) rel += 360.f;
+    natives::invoke(N_SET_GAMEPLAY_CAM_RELATIVE_HEADING, rel);
 }
 
-// systems.arm_follow: one IK target per row of sheets/arms.json
-void armFollow(int ped, const VrState& s, bool inVehicle) {
-    float heading = baseHeading(ped, s);
-    V head = boneCoords(ped, kHeadBone);
+// systems.arm_follow: one IK target per row of sheets/arms.json, in the same world-locked frame as the camera
+void armFollow(int ped, const VrState& s, bool inVehicle, float yaw, V anchor) {
     for (const ArmRow& a : kArms) {
         if (inVehicle && !a.inVehicle) continue;
         const XrPoseF3& p = s.pose[a.pose];
         if (!p.valid) continue;
-        V rel = xrToGta(sub(xrPos(p), xrPos(s.head)), heading);
-        if (len(rel) > a.maxReach * 1.6f) { float k = a.maxReach * 1.6f / len(rel); rel = {rel.x*k, rel.y*k, rel.z*k}; }
-        V target = add(head, rel);
+        V rel = xrToGta(sub(xrPos(p), xrPos(s.head)), yaw);
+        if (len(rel) > a.maxReach) { float k = a.maxReach / len(rel); rel = {rel.x*k, rel.y*k, rel.z*k}; }
+        V target = add(anchor, rel);
         natives::invoke(N_SET_IK_TARGET, ped, a.ikIndex, 0, 0, target.x, target.y, target.z, 0, a.blendIn, a.blendOut);
     }
 }
 
 // systems.weapon_aim: right controller's aim ray; trigger shoots at its end point
-void weaponAim(int ped, const VrState& s, bool inVehicle) {
+void weaponAim(int ped, const VrState& s, bool inVehicle, float yaw, V anchor) {
     if (inVehicle) return;
     const XrPoseF3& p = s.pose[IN_RIGHT_AIM_POSE];
     if (!p.valid || s.value[IN_FIRE] < kTrigger) return;
-    float heading = baseHeading(ped, s);
-    V head = boneCoords(ped, kHeadBone);
-    V origin = add(head, xrToGta(sub(xrPos(p), xrPos(s.head)), heading));
-    V dir = xrToGta(qrot(p, {0,0,-1}), heading);
+    V origin = add(anchor, xrToGta(sub(xrPos(p), xrPos(s.head)), yaw));
+    V dir = xrToGta(qrot(p, {0,0,-1}), yaw);
     V t = add(origin, {dir.x*kAimRay, dir.y*kAimRay, dir.z*kAimRay});
     natives::invoke(N_SET_PED_SHOOTS_AT_COORD, ped, t.x, t.y, t.z, 1);
+}
+
+// right stick: snap turn 30 degrees
+bool g_turnLatch = false;
+void snapTurn(const VrState& s) {
+    float x = s.value[IN_TURN_X];
+    if (!g_turnLatch && fabsf(x) > 0.7f) { g_baseYaw -= (x > 0 ? 30.f : -30.f); g_turnLatch = true; }
+    if (fabsf(x) < 0.3f) g_turnLatch = false;
 }
 
 // systems.controller_input: every non-pose row of sheets/inputs.json feeds its GTA control
@@ -109,8 +133,10 @@ void controllerInput(const VrState& s, bool inVehicle) {
         int ctl = inVehicle ? r.controlVehicle : r.control;
         if (ctl < 0) continue;
         float v = s.value[i];
-        // nothing is sent while a stick is centred / a trigger is released: a constant "centre" value made the character walk in circles
-        if (i == IN_MOVE_X || i == IN_MOVE_Y) { if (fabsf(v) < kDeadzone) continue; v = 0.5f + 0.5f * v * r.axisSign; }
+        // nothing is sent while a stick is centred / a trigger is released.
+        // Axes take -1..1 (MOVE_UD: -1 = forward, MOVE_LR: +1 = right). 0.4.x sent 0..1 with 0.5 as centre,
+        // which pushed the character backwards/right all the time ("crooked" controls).
+        if (i == IN_MOVE_X || i == IN_MOVE_Y) { if (fabsf(v) < kDeadzone) continue; v = v * r.axisSign; }
         else if (r.type == XrType::Float) { if (v < kTrigger) continue; }
         else if (v < 0.5f) continue;
         natives::invoke<int>(N_SET_CONTROL_VALUE_NEXT_FRAME, 0, ctl, v);
@@ -137,9 +163,12 @@ void tick() {
     if (!s.running) { releaseCamera(); return; }
     int ped = natives::invoke<int>(N_PLAYER_PED_ID);
     bool inVehicle = natives::invoke<int>(N_IS_PED_IN_ANY_VEHICLE, ped, 0) != 0;
-    headCamera(ped, s);
-    armFollow(ped, s, inVehicle);
-    weaponAim(ped, s, inVehicle);
+    snapTurn(s);
+    float yaw = frameYaw(ped, s);
+    V anchor = eyeAnchor(ped, s, yaw);
+    headCamera(ped, s, yaw, anchor);
+    armFollow(ped, s, inVehicle, yaw, anchor);
+    weaponAim(ped, s, inVehicle, yaw, anchor);
     controllerInput(s, inVehicle);
 }
 }
