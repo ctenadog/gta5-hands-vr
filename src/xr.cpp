@@ -1,7 +1,10 @@
-// OpenXR on GTA's own D3D11 device. Alternate-eye rendering: GTA renders one eye per frame
+// OpenXR on a separate D3D11 device (GTA5VR.ini device=own, default) or on GTA's own device (device=game).
+// own: GTA's frame is drawn into a shared keyed-mutex texture on GTA's device, then copied into the eye image on our device.
+// Alternate-eye rendering: GTA renders one eye per frame
 // (the head camera puts the scripted camera at that eye), and this copies the frame into that eye's swapchain.
 #include <windows.h>
 #include <d3d11.h>
+#include <dxgi1_2.h>
 #include <algorithm>
 #include <mutex>
 #include <vector>
@@ -56,8 +59,16 @@ XrSessionState lastState = XR_SESSION_STATE_UNKNOWN;
 std::mutex mtx; VrState state{};
 uint64_t frameNo = 0;
 int64_t scFormat = 0;
+// device=own: OpenXR (and SteamVR) only ever see this device, never GTA's
+bool g_useOwn = true;
+ID3D11Device* g_own = nullptr; ID3D11DeviceContext* g_ownCtx = nullptr;
+ID3D11Texture2D* g_shOwn[2] = {}; ID3D11Texture2D* g_shGta[2] = {};
+IDXGIKeyedMutex* g_kmOwn[2] = {}; IDXGIKeyedMutex* g_kmGta[2] = {};
+template<class T> void relp(T*& p) { if (p) { p->Release(); p = nullptr; } }
+void releaseShared() { for (int e = 0; e < 2; ++e) { relp(g_kmOwn[e]); relp(g_kmGta[e]); relp(g_shOwn[e]); relp(g_shGta[e]); } }
+void releaseOwn() { releaseShared(); if (g_ownCtx) { g_ownCtx->ClearState(); g_ownCtx->Flush(); } relp(g_ownCtx); relp(g_own); }
 // periodic stats (written to the log every 2 s for the first 30 s, then every 10 s)
-struct Stats { unsigned presents = 0, submitted = 0, layered = 0, endFail = 0, acqFail = 0, blitFail = 0, badPose = 0, noRender = 0, slow = 0; int lastErr = 0; ULONGLONG maxMs = 0; } st;
+struct Stats { unsigned syncFail = 0, presents = 0, submitted = 0, layered = 0, endFail = 0, acqFail = 0, blitFail = 0, badPose = 0, noRender = 0, slow = 0; int lastErr = 0; ULONGLONG maxMs = 0; } st;
 ULONGLONG stStart = 0, stLast = 0;
 void statsTick() {
     ULONGLONG now = GetTickCount64();
@@ -65,8 +76,8 @@ void statsTick() {
     ULONGLONG every = (now - stStart < 30000) ? 2000 : 10000;
     if (now - stLast < every) return;
     float sec = (now - stLast) / 1000.f;
-    vrlog::write("xr: stats %.0fs: game %.0f fps, to headset %.0f fps (with image %u), endFrame errors %u (last %d), acquire fail %u, blit fail %u, bad pose %u, shouldRender=0 %u, slowest frame %llu ms",
-        sec, st.presents / sec, st.submitted / sec, st.layered, st.endFail, st.lastErr, st.acqFail, st.blitFail, st.badPose, st.noRender, st.maxMs);
+    vrlog::write("xr: stats %.0fs: game %.0f fps, to headset %.0f fps (with image %u), endFrame errors %u (last %d), acquire fail %u, blit fail %u, bad pose %u, shouldRender=0 %u, slowest frame %llu ms, shared-texture sync fail %u, device %s",
+        sec, st.presents / sec, st.submitted / sec, st.layered, st.endFail, st.lastErr, st.acqFail, st.blitFail, st.badPose, st.noRender, st.maxMs, st.syncFail, g_useOwn ? "own" : "game");
     const auto& q = lastHead.orientation; const auto& t = lastHead.position;
     vrlog::write("xr: layer pose q(%.2f %.2f %.2f %.2f) p(%.2f %.2f %.2f) half-fov %.1f deg, cam history %d", q.x, q.y, q.z, q.w, t.x, t.y, t.z, atanf(g_tanHalf) * 57.29578f, camCount);
     st = Stats{}; stLast = now;
@@ -82,6 +93,7 @@ void destroySession() {
     stage = viewSpace = XR_NULL_HANDLE;
     if (sess) xrDestroySession(sess);
     sess = XR_NULL_HANDLE;
+    releaseOwn();
     sessionRunning = false; exitRequested = false; lastState = XR_SESSION_STATE_UNKNOWN; frameNo = 0;
     for (auto& v : lastView) v = {XR_TYPE_VIEW};
     for (auto& v : pendView) v = {XR_TYPE_VIEW};
@@ -199,6 +211,9 @@ void pickRuntime() {
     g_stereo = GetPrivateProfileIntA("vr", "stereo", 0, ini.c_str()) != 0;
     if (GetPrivateProfileIntA("vr", "latency", -1, ini.c_str()) < 0) WritePrivateProfileStringA("vr", "latency", "1", ini.c_str());
     g_latency = std::max(0, std::min(6, (int)GetPrivateProfileIntA("vr", "latency", 1, ini.c_str())));
+    if (GetPrivateProfileIntA("vr", "own_device", -1, ini.c_str()) < 0) WritePrivateProfileStringA("vr", "own_device", "1", ini.c_str());
+    g_useOwn = GetPrivateProfileIntA("vr", "own_device", 1, ini.c_str()) != 0;
+    vrlog::write("xr: own_device=%d (%s)", g_useOwn ? 1 : 0, g_useOwn ? "separate D3D11 device for SteamVR" : "GTA's D3D11 device");
     vrlog::write("xr: latency=%d frames (GTA5VR.ini latency, 0..6)", g_latency);
     vrlog::write("xr: mode %s (GTA5VR.ini stereo=%d)", g_stereo ? "stereo (alternate eye, experimental)" : "mono (same image both eyes, stable)", g_stereo ? 1 : 0);
     // GTA started from Steam carries SteamAppId=271590 in its environment. SteamVR's client (loaded into this process)
@@ -256,12 +271,36 @@ bool startSession(ID3D11Device* dev, DXGI_FORMAT bbFormat) {
           vrlog::write("xr: GTA GPU %ls, headset GPU %s", d.Description, memcmp(&d.AdapterLuid, &req.adapterLuid, sizeof(LUID)) == 0 ? "same" : "DIFFERENT (set GTA to the headset GPU)");
       if (ad) ad->Release();
       if (dd) dd->Release(); }
-    // the runtime touches GTA's device from its own thread: without this the game can hang
-    { ID3D10Multithread* mt = nullptr; if (SUCCEEDED(dev->QueryInterface(__uuidof(ID3D10Multithread), (void**)&mt))) { mt->SetMultithreadProtected(TRUE); mt->Release(); } }
-    XrGraphicsBindingD3D11KHR gb{XR_TYPE_GRAPHICS_BINDING_D3D11_KHR}; gb.device = dev;
+    ID3D11Device* xrDev = dev;
+    if (g_useOwn) {
+        // our own device on the headset's adapter: SteamVR's shared-texture sync then never touches GTA's device
+        IDXGIFactory1* f = nullptr; IDXGIAdapter1* found = nullptr;
+        if (SUCCEEDED(CreateDXGIFactory1(__uuidof(IDXGIFactory1), (void**)&f))) {
+            IDXGIAdapter1* a = nullptr;
+            for (UINT i = 0; f->EnumAdapters1(i, &a) != DXGI_ERROR_NOT_FOUND; ++i) {
+                DXGI_ADAPTER_DESC1 d; a->GetDesc1(&d);
+                if (!found && memcmp(&d.AdapterLuid, &req.adapterLuid, sizeof(LUID)) == 0) { found = a; vrlog::write("xr: own device adapter: %ls", d.Description); }
+                else a->Release();
+            }
+            f->Release();
+        }
+        D3D_FEATURE_LEVEL fls[] = {D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0}, got{};
+        HRESULT hr = D3D11CreateDevice(found, found ? D3D_DRIVER_TYPE_UNKNOWN : D3D_DRIVER_TYPE_HARDWARE, nullptr, D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+                                       fls, 2, D3D11_SDK_VERSION, &g_own, &got, &g_ownCtx);
+        if (hr == E_INVALIDARG) hr = D3D11CreateDevice(found, found ? D3D_DRIVER_TYPE_UNKNOWN : D3D_DRIVER_TYPE_HARDWARE, nullptr, D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+                                       fls + 1, 1, D3D11_SDK_VERSION, &g_own, &got, &g_ownCtx);
+        if (found) found->Release();
+        if (FAILED(hr)) { vrlog::write("xr: own D3D11 device failed (0x%08x) - set own_device=0 in GTA5VR.ini", (unsigned)hr); releaseOwn(); return false; }
+        vrlog::write("xr: own D3D11 device created (feature level %x)", (unsigned)got);
+        xrDev = g_own;
+    } else {
+        // the runtime touches GTA's device from its own thread: without this the game can hang
+        ID3D10Multithread* mt = nullptr; if (SUCCEEDED(dev->QueryInterface(__uuidof(ID3D10Multithread), (void**)&mt))) { mt->SetMultithreadProtected(TRUE); mt->Release(); }
+    }
+    XrGraphicsBindingD3D11KHR gb{XR_TYPE_GRAPHICS_BINDING_D3D11_KHR}; gb.device = xrDev;
     XrSessionCreateInfo si{XR_TYPE_SESSION_CREATE_INFO}; si.next = &gb; si.systemId = sys;
     if (!blit::init(dev)) return false;
-    if (!ok(xrCreateSession(inst, &si, &sess), "xrCreateSession (GPU must match the headset's adapter)")) { sess = XR_NULL_HANDLE; return false; }
+    if (!ok(xrCreateSession(inst, &si, &sess), "xrCreateSession (GPU must match the headset's adapter)")) { sess = XR_NULL_HANDLE; releaseOwn(); return false; }
     XrReferenceSpaceCreateInfo rs{XR_TYPE_REFERENCE_SPACE_CREATE_INFO}; rs.poseInReferenceSpace.orientation.w = 1;
     rs.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_LOCAL; xrCreateReferenceSpace(sess, &rs, &stage);
     rs.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_VIEW;  xrCreateReferenceSpace(sess, &rs, &viewSpace);
@@ -287,6 +326,24 @@ bool startSession(ID3D11Device* dev, DXGI_FORMAT bbFormat) {
         uint32_t c = 0; xrEnumerateSwapchainImages(sc[e], 0, &c, nullptr);
         scImg[e].assign(c, {XR_TYPE_SWAPCHAIN_IMAGE_D3D11_KHR});
         xrEnumerateSwapchainImages(sc[e], c, &c, (XrSwapchainImageBaseHeader*)scImg[e].data());
+    }
+    if (g_useOwn) {
+        // one shared texture per eye, eye-sized, same format as the eye images: GTA's device draws, ours copies
+        for (int e = 0; e < 2; ++e) {
+            D3D11_TEXTURE2D_DESC t{}; t.Width = vcv[e].recommendedImageRectWidth; t.Height = vcv[e].recommendedImageRectHeight;
+            t.MipLevels = 1; t.ArraySize = 1; t.Format = (DXGI_FORMAT)fmt; t.SampleDesc = {1, 0}; t.Usage = D3D11_USAGE_DEFAULT;
+            t.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE; t.MiscFlags = D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX;
+            HRESULT hr = g_own->CreateTexture2D(&t, nullptr, &g_shOwn[e]);
+            HANDLE h = nullptr; IDXGIResource* r = nullptr;
+            if (SUCCEEDED(hr)) hr = g_shOwn[e]->QueryInterface(__uuidof(IDXGIResource), (void**)&r);
+            if (SUCCEEDED(hr)) hr = r->GetSharedHandle(&h);
+            relp(r);
+            if (SUCCEEDED(hr)) hr = dev->OpenSharedResource(h, __uuidof(ID3D11Texture2D), (void**)&g_shGta[e]);
+            if (SUCCEEDED(hr)) hr = g_shOwn[e]->QueryInterface(__uuidof(IDXGIKeyedMutex), (void**)&g_kmOwn[e]);
+            if (SUCCEEDED(hr)) hr = g_shGta[e]->QueryInterface(__uuidof(IDXGIKeyedMutex), (void**)&g_kmGta[e]);
+            if (FAILED(hr)) { vrlog::write("xr: shared eye texture failed (0x%08x, format %d) - set own_device=0 in GTA5VR.ini", (unsigned)hr, (int)fmt); destroySession(); return false; }
+        }
+        vrlog::write("xr: shared eye textures ready");
     }
     for (int i = 0; i < IN_COUNT; ++i) if (kInputs[i].type == XrType::Pose) {
         XrActionSpaceCreateInfo a{XR_TYPE_ACTION_SPACE_CREATE_INFO}; a.action = act[i]; a.poseInActionSpace.orientation.w = 1;
@@ -325,6 +382,20 @@ void onPresent(ID3D11DeviceContext* ctx, ID3D11Texture2D* bb) {
 
     int eye;
     { std::lock_guard<std::mutex> l(mtx); eye = state.renderEye; }   // the eye this frame was rendered for
+    bool srgbF = scFormat == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB || scFormat == DXGI_FORMAT_B8G8R8A8_UNORM_SRGB;
+    // device=own: GTA's device draws the frame into the shared texture(s) first; our device holds them while copying
+    bool haveSrc[2] = {};
+    if (g_useOwn && !g_test) for (int e = 0; e < 2; ++e) {
+        if (g_stereo ? e != eye : e != 0) continue;
+        if (g_kmGta[e]->AcquireSync(0, 50) != S_OK) { ++st.syncFail; continue; }
+        float aspect = (float)vcv[e].recommendedImageRectWidth / (float)vcv[e].recommendedImageRectHeight;
+        bool d = blit::draw(ctx, bb, g_shGta[e], (DXGI_FORMAT)scFormat, srgbF, aspect, false, true);
+        g_kmGta[e]->ReleaseSync(1);
+        if (!d) { ++st.blitFail; if (frameNo < 5) vrlog::write("xr: blit into shared texture failed"); continue; }
+        if (g_kmOwn[e]->AcquireSync(1, 100) != S_OK) { ++st.syncFail; if (st.syncFail == 1) vrlog::write("xr: shared texture AcquireSync on own device failed"); continue; }
+        haveSrc[e] = true;
+    }
+    ID3D11DeviceContext* xctx = g_useOwn ? g_ownCtx : ctx;   // context of the device the eye images belong to
     // stereo: this frame goes into its eye; mono: the same frame goes into both eyes
     for (int target = 0; target < 2; ++target) {
     if (g_stereo && target != eye) continue;
@@ -347,17 +418,23 @@ void onPresent(ID3D11DeviceContext* ctx, ID3D11Texture2D* bb) {
                 D3D11_RENDER_TARGET_VIEW_DESC rv{}; rv.Format = (DXGI_FORMAT)scFormat; rv.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2D;
                 ID3D11RenderTargetView* rtv = nullptr;
                 drawn = d && SUCCEEDED(d->CreateRenderTargetView(scImg[target][idx].texture, &rv, &rtv));
-                if (drawn) { const float c[2][4] = {{1, 0, 1, 1}, {0, 1, 0, 1}}; ctx->ClearRenderTargetView(rtv, c[target]); rtv->Release(); }
+                if (drawn) { const float c[2][4] = {{1, 0, 1, 1}, {0, 1, 0, 1}}; xctx->ClearRenderTargetView(rtv, c[target]); rtv->Release(); }
                 else if (frameNo % 120 == 0) vrlog::write("xr: F10 clear: CreateRenderTargetView failed (format %d)", (int)scFormat);
                 if (d) d->Release();
+            } else if (g_useOwn) {
+                int src = g_stereo ? target : 0;
+                drawn = haveSrc[src];
+                if (drawn) g_ownCtx->CopyResource(scImg[target][idx].texture, g_shOwn[src]);
             } else drawn = blit::draw(ctx, bb, scImg[target][idx].texture, (DXGI_FORMAT)scFormat, srgb, aspect, false, target == 0 || g_stereo);
             if (!drawn) { ++st.blitFail; if (frameNo < 5) vrlog::write("xr: blit failed for eye %d", target); }
-            ctx->Flush();   // hand the eye image to the GPU now: SteamVR's compositor reads it from another process
+            xctx->Flush();   // hand the eye image to the GPU now: SteamVR's compositor reads it from another process
             XrSwapchainImageReleaseInfo ri{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO}; xrReleaseSwapchainImage(sc[target], &ri);
             if (drawn) scHasImage[target] = true;
         }
     }
     }
+    for (int e = 0; e < 2; ++e) if (haveSrc[e]) g_kmOwn[e]->ReleaseSync(0);
+    if (g_useOwn) g_ownCtx->Flush();
 
     // locate head, eyes and controllers for the next frame
     XrViewLocateInfo li{XR_TYPE_VIEW_LOCATE_INFO}; li.viewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
