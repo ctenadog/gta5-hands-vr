@@ -328,20 +328,44 @@ bool startSession(ID3D11Device* dev, DXGI_FORMAT bbFormat) {
         xrEnumerateSwapchainImages(sc[e], c, &c, (XrSwapchainImageBaseHeader*)scImg[e].data());
     }
     if (g_useOwn) {
-        // one shared texture per eye, eye-sized, same format as the eye images: GTA's device draws, ours copies
-        for (int e = 0; e < 2; ++e) {
-            D3D11_TEXTURE2D_DESC t{}; t.Width = vcv[e].recommendedImageRectWidth; t.Height = vcv[e].recommendedImageRectHeight;
-            t.MipLevels = 1; t.ArraySize = 1; t.Format = (DXGI_FORMAT)fmt; t.SampleDesc = {1, 0}; t.Usage = D3D11_USAGE_DEFAULT;
-            t.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE; t.MiscFlags = D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX;
-            HRESULT hr = g_own->CreateTexture2D(&t, nullptr, &g_shOwn[e]);
-            HANDLE h = nullptr; IDXGIResource* r = nullptr;
-            if (SUCCEEDED(hr)) hr = g_shOwn[e]->QueryInterface(__uuidof(IDXGIResource), (void**)&r);
-            if (SUCCEEDED(hr)) hr = r->GetSharedHandle(&h);
-            relp(r);
-            if (SUCCEEDED(hr)) hr = dev->OpenSharedResource(h, __uuidof(ID3D11Texture2D), (void**)&g_shGta[e]);
-            if (SUCCEEDED(hr)) hr = g_shOwn[e]->QueryInterface(__uuidof(IDXGIKeyedMutex), (void**)&g_kmOwn[e]);
-            if (SUCCEEDED(hr)) hr = g_shGta[e]->QueryInterface(__uuidof(IDXGIKeyedMutex), (void**)&g_kmGta[e]);
-            if (FAILED(hr)) { vrlog::write("xr: shared eye texture failed (0x%08x, format %d) - set own_device=0 in GTA5VR.ini", (unsigned)hr, (int)fmt); destroySession(); return false; }
+        // one shared texture per eye, eye-sized: GTA's device draws, ours copies.
+        // 0.3.1 used the sRGB format directly and the driver refused it (0x80070057), so try typeless/plain formats
+        // of the same family (CopyResource into the eye image only needs the same family) and both sharing modes.
+        const DXGI_FORMAT tryFmt[] = {DXGI_FORMAT_R8G8B8A8_TYPELESS, DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_B8G8R8A8_TYPELESS, DXGI_FORMAT_B8G8R8A8_UNORM};
+        const UINT tryBind[] = {D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE, D3D11_BIND_RENDER_TARGET};
+        bool fam8 = fmt == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB || fmt == DXGI_FORMAT_R8G8B8A8_UNORM || fmt == DXGI_FORMAT_R8G8B8A8_TYPELESS;
+        bool allOk = true;
+        for (int e = 0; e < 2 && allOk; ++e) {
+            bool made = false; HRESULT last = S_OK; const char* step = "";
+            for (DXGI_FORMAT tf : tryFmt) {
+                bool tfR = tf == DXGI_FORMAT_R8G8B8A8_TYPELESS || tf == DXGI_FORMAT_R8G8B8A8_UNORM;
+                if (tfR != fam8) continue;                      // must be copyable into the eye image
+                for (UINT bf : tryBind) {
+                    relp(g_kmOwn[e]); relp(g_kmGta[e]); relp(g_shGta[e]); relp(g_shOwn[e]);
+                    D3D11_TEXTURE2D_DESC t{}; t.Width = vcv[e].recommendedImageRectWidth; t.Height = vcv[e].recommendedImageRectHeight;
+                    t.MipLevels = 1; t.ArraySize = 1; t.Format = tf; t.SampleDesc = {1, 0}; t.Usage = D3D11_USAGE_DEFAULT;
+                    t.BindFlags = bf; t.MiscFlags = D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX;
+                    HANDLE h = nullptr; IDXGIResource* r = nullptr;
+                    HRESULT hr = g_own->CreateTexture2D(&t, nullptr, &g_shOwn[e]); step = "CreateTexture2D";
+                    if (SUCCEEDED(hr)) { hr = g_shOwn[e]->QueryInterface(__uuidof(IDXGIResource), (void**)&r); step = "IDXGIResource"; }
+                    if (SUCCEEDED(hr)) { hr = r->GetSharedHandle(&h); step = "GetSharedHandle"; }
+                    relp(r);
+                    if (SUCCEEDED(hr)) { hr = dev->OpenSharedResource(h, __uuidof(ID3D11Texture2D), (void**)&g_shGta[e]); step = "OpenSharedResource"; }
+                    if (SUCCEEDED(hr)) { hr = g_shOwn[e]->QueryInterface(__uuidof(IDXGIKeyedMutex), (void**)&g_kmOwn[e]); step = "KeyedMutex(own)"; }
+                    if (SUCCEEDED(hr)) { hr = g_shGta[e]->QueryInterface(__uuidof(IDXGIKeyedMutex), (void**)&g_kmGta[e]); step = "KeyedMutex(game)"; }
+                    if (SUCCEEDED(hr)) { made = true; if (e == 0) vrlog::write("xr: shared texture format %d, bind %u", (int)tf, bf); break; }
+                    last = hr; vrlog::write("xr: shared texture try format %d bind %u: %s failed (0x%08x)", (int)tf, bf, step, (unsigned)hr);
+                }
+                if (made) break;
+            }
+            if (!made) { allOk = false; relp(g_kmOwn[e]); relp(g_kmGta[e]); relp(g_shGta[e]); relp(g_shOwn[e]); (void)last; }
+        }
+        if (!allOk) {
+            // never leave VR broken: fall back to the 0.3.0 path (GTA's device) automatically
+            vrlog::write("xr: shared texture impossible on this driver - falling back to own_device=0 automatically");
+            destroySession();
+            g_useOwn = false;
+            return startSession(dev, bbFormat);
         }
         vrlog::write("xr: shared eye textures ready");
     }
