@@ -177,8 +177,9 @@ Get-ChildItem $dl -Filter 'GTA5VR-*.zip' -ErrorAction SilentlyContinue | ForEach
 Remove-Item $work -Recurse -Force -ErrorAction SilentlyContinue
 Write-Host ''
 Write-Host 'ГОТОВО.' -ForegroundColor Green
-Say '1. Запустите Pico Connect (или SteamVR) и подключите шлем.'
+Say '1. Запустите SteamVR и подключите шлем (Pico Connect -> SteamVR).'
 Say '2. Запустите GTA V, выберите СЮЖЕТНЫЙ режим.'
-Say '3. Нажмите F8 - включить/выключить VR.'
+Say '3. Посмотрите прямо и нажмите F8 - включить/выключить VR. F9 - сбросить направление.'
+Say '   F10 - тестовый цвет в шлеме, F11 - руки вкл/выкл. Все возможности: GTA5VR\README_RU.txt'
 Say "Лог: $game\GTA5VR.log - пришлите его, если что-то не работает."
 Say 'Только сюжетный режим. Не используйте моды в GTA Online.'

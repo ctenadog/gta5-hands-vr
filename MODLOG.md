@@ -70,3 +70,22 @@ Melty draft: GTA V Hands VR, modId f602c4c6-5677-4e51-92d8-5acfc524323e, MIT, re
 - Default mode now mono (camera at head centre, same image to both eyes); alternate-eye stereo behind GTA5VR.ini stereo=1.
 - F10 test pattern: colour gradient drawn into the eye images instead of the game, to tell "no frames reach SteamVR" from camera problems.
 - Sheets: inputs.turn_x, natives.SET_GAMEPLAY_CAM_RELATIVE_HEADING, settings.eye_height.
+
+## 0.2.6 (2026-10-06)
+- User log 0.2.5: SteamVR receives every frame with an image (~60 fps, 0 errors). User: camera broken, arms point down, image not right.
+- Camera: game camera now gets yaw+pitch only (roll 0; GTA roll sign unverified, a wrong sign tilted the world). The exact
+  roll-free pose the camera was set to is passed to the layer (history buffer, GTA5VR.ini latency=1 frames by default),
+  so the compositor reprojects head tilt + latency correctly instead of using a pose the image was not rendered with.
+- Mono: backbuffer copied once per frame (was twice -> fps drop to ~40).
+- Arms: SET_PED_CAN_ARM_IK(ped,1) every frame, blend in 100 ms, reach 0.7 m; first 6 IK targets logged; F11 toggles arm IK.
+
+## 0.2.7 (2026-10-06)
+- User: headset shows the SteamVR home + "loading" while the game runs; 0.2.5 log shows ~60 fps submitted with layers, 0 errors.
+  Arms move but the hands (wrists) point down.
+- F10 now clears the eye images to solid colours with ClearRenderTargetView (magenta left / green right): no shader, no state swap,
+  to tell "SteamVR ignores our layer" from "the blit writes nothing".
+- Wrists: SET_IK_TARGET only places the hand; no known native sets hand rotation -> not fixable without engine hooks (told the user).
+
+## Docs 2026-10-06 (0.2.7)
+- README.md, README_RU.txt, GTA5VR-README.txt rewritten: honest status table (works / broken / untested), full feature list,
+  keys F8-F11, controller map, GTA5VR.ini settings (runtime, stereo, latency), F10 check, uninstall. setup.bat end text: F10/F11 hint.
