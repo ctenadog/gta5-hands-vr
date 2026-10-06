@@ -53,6 +53,7 @@ LONG myTexGen = 0; int method = 0;
 ID3D11Texture2D* shTex = nullptr; IDXGIKeyedMutex* km = nullptr; LONG lastFrameNo = 0;
 HANDLE fmap = nullptr; uint8_t* frm = nullptr; LONG lastSeq = 0; std::vector<uint8_t> cpuBuf;
 float tanHalf = 1.f;
+CRITICAL_SECTION trLock; volatile bool trQuit = false;   // 0.4.2: transport answered from its own thread
 unsigned stFrames = 0, stLayered = 0, stNew = 0, stEndErr = 0, stLockBusy = 0;
 
 template<class T> void rel(T*& p) { if (p) { p->Release(); p = nullptr; } }
@@ -127,7 +128,8 @@ void checkTransport() {
     if (g == myTexGen) return;
     myTexGen = g;
     releaseTransport();
-    int m = shm->texMethod; HRESULT hr = E_FAIL; char why[200] = "";
+    int m = shm->texMethod;
+    L("game offers frame transport %d: %s %ux%u", (int)g, methodName(m), shm->texW, shm->texH); HRESULT hr = E_FAIL; char why[200] = "";
     if (m == bridge::M_NTNAME) {
         if (dev1) hr = dev1->OpenSharedResource1((HANDLE)(uintptr_t)shm->texHandle, __uuidof(ID3D11Texture2D), (void**)&shTex);
         if (FAILED(hr) && dev1) { L("  open by duplicated handle failed 0x%08x, trying by name", (unsigned)hr);
@@ -155,6 +157,11 @@ void checkTransport() {
     shm->ackOk = good ? 1 : 0;
     MemoryBarrier();
     shm->ackGen = g;
+}
+
+DWORD WINAPI transportThread(void*) {
+    while (!trQuit) { EnterCriticalSection(&trLock); checkTransport(); LeaveCriticalSection(&trLock); Sleep(5); }
+    return 0;
 }
 
 // copy the newest game frame (if any) into eyeCopy
@@ -306,7 +313,7 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR cmd, int) {
     SetCurrentDirectoryA(dir.c_str());
     vrlog::fileName() = "GTA5VR_Host.log";
     DWORD pid = (DWORD)strtoul(cmd ? cmd : "", nullptr, 10);
-    L("GTA5VR_Host 0.4.1 started for GTA5.exe pid %lu", (unsigned long)pid);
+    L("GTA5VR_Host 0.4.2 started for GTA5.exe pid %lu", (unsigned long)pid);
     wchar_t name[64]; bridge::shmName(pid, name, 64);
     HANDLE map = OpenFileMappingW(FILE_MAP_ALL_ACCESS, FALSE, name);
     if (!map) { L("no shared memory %ls (start this from the game with F8)", name); return 2; }
@@ -316,6 +323,8 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR cmd, int) {
     if (!gameProc) { L("game process not found"); return 4; }
     myTexGen = shm->texGen;   // anything published before this helper started belongs to an old helper
     if (!setup()) { Sleep(200); return 5; }
+    InitializeCriticalSection(&trLock);
+    HANDLE trThread = CreateThread(nullptr, 0, transportThread, nullptr, 0, nullptr);
 
     bool running = false, exitReq = false, quit = false; XrSessionState state = XR_SESSION_STATE_UNKNOWN;
     ULONGLONG lastStat = GetTickCount64(); bool wasTest = false;
@@ -327,7 +336,6 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR cmd, int) {
             exitReq = true;
             if (running) xrRequestExitSession(sess); else quit = true;
         }
-        checkTransport();
         XrEventDataBuffer ev{XR_TYPE_EVENT_DATA_BUFFER};
         while (xrPollEvent(inst, &ev) == XR_SUCCESS) {
             if (ev.type == XR_TYPE_EVENT_DATA_SESSION_STATE_CHANGED) {
@@ -344,7 +352,7 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR cmd, int) {
         XrFrameState fs{XR_TYPE_FRAME_STATE}; XrFrameWaitInfo wi{XR_TYPE_FRAME_WAIT_INFO};
         if (!ok(xrWaitFrame(sess, &wi, &fs), "xrWaitFrame")) { Sleep(5); continue; }
         XrFrameBeginInfo bi{XR_TYPE_FRAME_BEGIN_INFO}; xrBeginFrame(sess, &bi);
-        if (method) pullFrame();
+        EnterCriticalSection(&trLock); if (method) pullFrame(); LeaveCriticalSection(&trLock);
         XrViewLocateInfo li{XR_TYPE_VIEW_LOCATE_INFO}; li.viewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO; li.displayTime = fs.predictedDisplayTime; li.space = space;
         XrViewState vs{XR_TYPE_VIEW_STATE}; XrView v[2] = {{XR_TYPE_VIEW}, {XR_TYPE_VIEW}}; uint32_t vn = 2; xrLocateViews(sess, &li, &vs, 2, &vn, v);
         XrActiveActionSet as{aset, XR_NULL_PATH}; XrActionsSyncInfo sy{XR_TYPE_ACTIONS_SYNC_INFO}; sy.countActiveActionSets = 1; sy.activeActionSets = &as;
@@ -401,6 +409,7 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR cmd, int) {
             stFrames = stLayered = stNew = stEndErr = stLockBusy = 0; lastStat = now;
         }
     }
+    trQuit = true; if (trThread) { WaitForSingleObject(trThread, 2000); CloseHandle(trThread); }
     releaseTransport();
     if (sess) xrDestroySession(sess);
     if (inst) xrDestroyInstance(inst);
