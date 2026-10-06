@@ -4,9 +4,9 @@
 
 struct XrPoseF3 { float qx, qy, qz, qw; float px, py, pz; bool valid; };
 
-// Shared between the render thread (Present) and the game script thread.
+// Shared between the helper process (OpenXR), the render thread (Present) and the game script thread.
 struct VrState {
-    XrPoseF3 head;              // headset pose in OpenXR stage space (Y up, -Z forward)
+    XrPoseF3 head;              // headset pose in OpenXR local space (Y up, -Z forward)
     XrPoseF3 eye[2];            // per-eye poses
     float    eyeFovDeg[2];      // vertical fov per eye
     XrPoseF3 pose[IN_COUNT];    // pose actions (grip/aim)
@@ -17,15 +17,13 @@ struct VrState {
     bool     running;
 };
 
+// Since 0.4.0 OpenXR does not run inside GTA5.exe: SteamVR never displayed frames submitted from the game process
+// (0.2.x-0.3.x), while the same code in a separate process (xrtest.exe) worked. GTA5VR_Host.exe owns the OpenXR
+// session; the game side only hands each frame over (shared texture or shared memory) and reads poses back.
 namespace xr {
-bool loadLoader();                                   // on F8: picks SteamVR (GTA5VR.ini), loads openxr_loader.dll, creates the instance
-bool startSession(ID3D11Device* dev, DXGI_FORMAT bbFormat); // on the first Present after F8
-void setWanted(bool on);                             // F8 on/off: begin or end the OpenXR session
-bool hasSession();
-bool needsSession();                                // instance ok, no session (first F8 or after the last one ended)
-bool failed();                                      // hung/broken: game must turn VR off
-void poll();                                         // pump OpenXR events without submitting a frame
-void onPresent(ID3D11DeviceContext* ctx, ID3D11Texture2D* backbuffer); // submits this frame to its eye
+void setWanted(bool on);                             // F8 on/off: starts / stops GTA5VR_Host.exe
+bool failed();                                       // the helper failed or died: game must turn VR off
+void onPresent(ID3D11Device* dev, ID3D11DeviceContext* ctx, ID3D11Texture2D* backbuffer); // hands this frame over
 VrState snapshot();                                  // copy for the script thread
 void shutdown();
 void toggleTestPattern();                            // F10: colour test image instead of the game

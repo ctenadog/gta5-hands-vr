@@ -11,7 +11,6 @@
 
 namespace {
 HMODULE g_mod = nullptr;
-bool g_xrOk = false;
 
 // sheet hooks.present: SHV calls this on every IDXGISwapChain::Present
 // Nothing VR happens until the player presses F8 in story mode: no OpenXR session in menus or loading screens,
@@ -19,33 +18,16 @@ bool g_xrOk = false;
 void onPresent(void* swapChain) {
     bool want = game::enabled();
     if (want && xr::failed()) { game::forceOff(); want = false; }
-    if (g_xrOk) xr::setWanted(want);
-    if (!want) { if (g_xrOk && xr::hasSession()) xr::poll(); return; }
-    // OpenXR starts only now (F8), so SteamVR can be started any time before pressing F8
-    if (!g_xrOk) {
-        static int triedGen = -1;
-        if (triedGen == game::generation()) return;
-        triedGen = game::generation();
-        vrlog::write("starting OpenXR...");
-        g_xrOk = xr::loadLoader();
-        if (!g_xrOk) { vrlog::write("VR could not start: start SteamVR, connect the headset, press F8 again"); game::forceOff(); return; }
-        xr::setWanted(true);
-    }
+    xr::setWanted(want);   // F8: starts / stops GTA5VR_Host.exe, which runs OpenXR outside the game process
+    if (!want) return;
     auto* sw = static_cast<IDXGISwapChain*>(swapChain);
     ID3D11Device* dev = nullptr;
     if (FAILED(sw->GetDevice(__uuidof(ID3D11Device), (void**)&dev))) return;
     ID3D11Texture2D* bb = nullptr;
     if (FAILED(sw->GetBuffer(0, __uuidof(ID3D11Texture2D), (void**)&bb))) { dev->Release(); return; }
-    static int sessionGen = -1;   // one session attempt per F8 press; a new one after the previous session ended
-    if (xr::needsSession() && sessionGen != game::generation()) {
-        sessionGen = game::generation();
-        D3D11_TEXTURE2D_DESC d; bb->GetDesc(&d);
-        if (!xr::startSession(dev, d.Format)) { vrlog::write("VR session could not start - see errors above"); game::forceOff(); bb->Release(); dev->Release(); return; }
-    }
-    if (!xr::hasSession()) { bb->Release(); dev->Release(); return; }
     ID3D11DeviceContext* ctx = nullptr;
     dev->GetImmediateContext(&ctx);
-    xr::onPresent(ctx, bb);
+    xr::onPresent(dev, ctx, bb);
     bb->Release(); ctx->Release(); dev->Release();
 }
 
@@ -64,7 +46,7 @@ void scriptMain() {
 }
 
 DWORD WINAPI boot(LPVOID) {
-    vrlog::write("GTA5VR 0.3.2 loading (Script Hook V build, story mode only)");
+    vrlog::write("GTA5VR 0.4.0 loading (Script Hook V build, story mode only)");
     // SHV may be loaded after us by the ASI loader: retry for ~30 s.
     bool ok = false;
     for (int i = 0; i < 60 && !(ok = natives::init()); ++i) Sleep(500);
