@@ -44,6 +44,9 @@ XrPosef pendHead{{0,0,0,0},{0,0,0}}, lastHead{{0,0,0,0},{0,0,0}};
 bool g_stereo = false;            // GTA5VR.ini [vr] stereo=1: alternate-eye stereo (experimental); default mono
 bool g_test = false;              // F10 test pattern
 float g_tanHalf = 1.f;            // symmetric tan(half vertical fov) used for the game camera and the layer
+int g_latency = 1;                // GTA5VR.ini latency=N: game frames between setting the camera and the frame reaching Present
+// poses the script thread set the game camera to (newest last); the layer uses the one g_latency frames back
+XrPosef camHist[8]; int camCount = 0; std::mutex camMtx;
 bool scHasImage[2] = {};
 bool sessionRunning = false;
 bool wantRunning = false;          // F8: VR on. Session is begun only while this is true.
@@ -81,6 +84,7 @@ void destroySession() {
     for (auto& v : lastView) v = {XR_TYPE_VIEW};
     for (auto& v : pendView) v = {XR_TYPE_VIEW};
     pendHead = lastHead = XrPosef{{0,0,0,0},{0,0,0}};
+    { std::lock_guard<std::mutex> l(camMtx); camCount = 0; }
     stStart = 0; st = Stats{};
     blit::reset();
     std::lock_guard<std::mutex> l(mtx); state.running = false;
@@ -191,6 +195,9 @@ void pickRuntime() {
     vrlog::write("xr: GTA5VR.ini runtime=%s; SteamVR running: %s", rt, processRunning("vrserver.exe") ? "yes" : "no");
     if (GetPrivateProfileIntA("vr", "stereo", -1, ini.c_str()) < 0) WritePrivateProfileStringA("vr", "stereo", "0", ini.c_str());
     g_stereo = GetPrivateProfileIntA("vr", "stereo", 0, ini.c_str()) != 0;
+    if (GetPrivateProfileIntA("vr", "latency", -1, ini.c_str()) < 0) WritePrivateProfileStringA("vr", "latency", "1", ini.c_str());
+    g_latency = std::max(0, std::min(6, (int)GetPrivateProfileIntA("vr", "latency", 1, ini.c_str())));
+    vrlog::write("xr: latency=%d frames (GTA5VR.ini latency, 0..6)", g_latency);
     vrlog::write("xr: mode %s (GTA5VR.ini stereo=%d)", g_stereo ? "stereo (alternate eye, experimental)" : "mono (same image both eyes, stable)", g_stereo ? 1 : 0);
     if (_stricmp(rt, "system") == 0) return;
     std::string j = findSteamVrJson();
@@ -320,7 +327,7 @@ void onPresent(ID3D11DeviceContext* ctx, ID3D11Texture2D* bb) {
         if (wr == XR_SUCCESS) {
             float aspect = (float)vcv[target].recommendedImageRectWidth / (float)vcv[target].recommendedImageRectHeight;
             bool srgb = scFormat == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB || scFormat == DXGI_FORMAT_B8G8R8A8_UNORM_SRGB;   // GTA's image is already gamma-encoded
-            bool drawn = blit::draw(ctx, bb, scImg[target][idx].texture, (DXGI_FORMAT)scFormat, srgb, aspect, g_test);
+            bool drawn = blit::draw(ctx, bb, scImg[target][idx].texture, (DXGI_FORMAT)scFormat, srgb, aspect, g_test, target == 0 || g_stereo);
             if (!drawn) { ++st.blitFail; if (frameNo < 5) vrlog::write("xr: blit failed for eye %d", target); }
             ctx->Flush();   // hand the eye image to the GPU now: SteamVR's compositor reads it from another process
             XrSwapchainImageReleaseInfo ri{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO}; xrReleaseSwapchainImage(sc[target], &ri);
@@ -363,20 +370,17 @@ void onPresent(ID3D11DeviceContext* ctx, ID3D11Texture2D* bb) {
             XrActionStateBoolean b{XR_TYPE_ACTION_STATE_BOOLEAN}; xrGetActionStateBoolean(sess, &g, &b); s.value[i] = b.currentState ? 1.f : 0.f;
         }
     }
-    // The image copied above was rendered by the game with the poses read LAST frame (the script thread set the
-    // camera from them), so the layer must carry those poses, not the new ones - otherwise the compositor
-    // reprojects to the wrong place and the view shakes.
-    if (poseOk(pendView[eye].pose)) lastView[eye] = pendView[eye];
-    if (!g_stereo && poseOk(pendHead)) lastHead = pendHead;
-    bool tracked = (vs.viewStateFlags & XR_VIEW_STATE_ORIENTATION_VALID_BIT) && poseOk(views[0].pose) && poseOk(views[1].pose);
-    if (tracked) { pendView[0] = views[0]; pendView[1] = views[1]; }
-    if ((hl.locationFlags & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT) && poseOk(hl.pose)) pendHead = hl.pose;
+    // The layer must carry exactly the orientation the game camera rendered this image with: the roll-free pose the
+    // script thread set g_latency game frames ago. The compositor then corrects the rest (head tilt, latency) itself.
+    { std::lock_guard<std::mutex> l(camMtx);
+      if (camCount > 0) { int i = std::max(0, camCount - 1 - g_latency); lastHead = camHist[i]; } }
+    if (g_stereo) { lastView[eye].pose = lastHead; lastView[eye].fov = views[eye].fov; }
 
     float ha = atanf(g_tanHalf);
     XrCompositionLayerProjectionView pv[2];
     for (int e = 0; e < 2; ++e) {
         pv[e] = {XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW};
-        pv[e].pose = g_stereo ? lastView[e].pose : lastHead;
+        pv[e].pose = (g_stereo && poseOk(lastView[e].pose)) ? lastView[e].pose : lastHead;
         pv[e].fov = {-ha, ha, ha, -ha};
         pv[e].subImage.swapchain = sc[e];
         pv[e].subImage.imageRect = {{0,0},{(int32_t)vcv[e].recommendedImageRectWidth,(int32_t)vcv[e].recommendedImageRectHeight}};
@@ -385,7 +389,7 @@ void onPresent(ID3D11DeviceContext* ctx, ID3D11Texture2D* bb) {
     const XrCompositionLayerBaseHeader* layers[] = {(XrCompositionLayerBaseHeader*)&layer};
     XrFrameEndInfo ei{XR_TYPE_FRAME_END_INFO}; ei.displayTime = fs.predictedDisplayTime; ei.environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
     bool both = scHasImage[0] && scHasImage[1];
-    bool poses = g_stereo ? (poseOk(lastView[0].pose) && poseOk(lastView[1].pose)) : poseOk(lastHead);   // a zero quaternion makes xrEndFrame fail
+    bool poses = poseOk(lastHead);   // a zero quaternion makes xrEndFrame fail
     if (!poses) ++st.badPose;
     if (!fs.shouldRender) ++st.noRender;
     ei.layerCount = (both && poses && fs.shouldRender) ? 1 : 0; ei.layers = layers;
@@ -401,5 +405,22 @@ void onPresent(ID3D11DeviceContext* ctx, ID3D11Texture2D* bb) {
 
 VrState snapshot() { std::lock_guard<std::mutex> l(mtx); return state; }
 void shutdown() { if (inst) xrDestroyInstance(inst); inst = XR_NULL_HANDLE; }
+XrPoseF3 removeRoll(const XrPoseF3& p) {
+    // forward = q * (0,0,-1); rebuild q = yaw(Y) * pitch(X) with the same forward and no roll
+    float x = p.qx, y = p.qy, z = p.qz, w = p.qw;
+    float fx = -(2*(x*z + w*y)), fy = -(2*(y*z - w*x)), fz = -(1 - 2*(x*x + y*y));
+    float yaw = atan2f(-fx, -fz), pitch = asinf(std::max(-1.f, std::min(1.f, fy)));
+    float cy = cosf(yaw/2), sy = sinf(yaw/2), cp = cosf(pitch/2), sp = sinf(pitch/2);
+    XrPoseF3 r = p;   // (0,sy,0,cy) * (sp,0,0,cp)
+    r.qx = cy*sp; r.qy = sy*cp; r.qz = -sy*sp; r.qw = cy*cp;
+    return r;
+}
+void reportCameraPose(const XrPoseF3& u) {
+    XrPosef p{{u.qx, u.qy, u.qz, u.qw}, {u.px, u.py, u.pz}};
+    if (!poseOk(p)) return;
+    std::lock_guard<std::mutex> l(camMtx);
+    if (camCount == 8) { for (int i = 1; i < 8; ++i) camHist[i-1] = camHist[i]; camCount = 7; }
+    camHist[camCount++] = p;
+}
 void toggleTestPattern() { g_test = !g_test; vrlog::write("F10: test pattern %s", g_test ? "ON (headset should show a colour gradient)" : "off"); }
 }

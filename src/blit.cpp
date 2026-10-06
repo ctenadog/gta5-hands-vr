@@ -69,7 +69,7 @@ bool init(ID3D11Device* dev) {
     return g_ok;
 }
 
-bool draw(ID3D11DeviceContext* ctx, ID3D11Texture2D* bb, ID3D11Texture2D* eyeTex, DXGI_FORMAT rtvFormat, bool linearize, float eyeAspect, bool testPattern) {
+bool draw(ID3D11DeviceContext* ctx, ID3D11Texture2D* bb, ID3D11Texture2D* eyeTex, DXGI_FORMAT rtvFormat, bool linearize, float eyeAspect, bool testPattern, bool copySource) {
     if (!g_ok) return false;
     D3D11_TEXTURE2D_DESC bd; bb->GetDesc(&bd);
     // the backbuffer usually has no shader-resource binding: copy it to our own texture first
@@ -80,8 +80,9 @@ bool draw(ID3D11DeviceContext* ctx, ID3D11Texture2D* bb, ID3D11Texture2D* eyeTex
         if (FAILED(g_dev->CreateTexture2D(&t, nullptr, &g_tmp))) { vrlog::write("blit: temp texture failed (format %d)", (int)bd.Format); return false; }
         g_dev->CreateShaderResourceView(g_tmp, nullptr, &g_srv);
         g_tmpDesc = bd;
+        copySource = true;
     }
-    if (bd.SampleDesc.Count > 1) ctx->ResolveSubresource(g_tmp, 0, bb, 0, bd.Format); else ctx->CopyResource(g_tmp, bb);
+    if (copySource) { if (bd.SampleDesc.Count > 1) ctx->ResolveSubresource(g_tmp, 0, bb, 0, bd.Format); else ctx->CopyResource(g_tmp, bb); }
 
     D3D11_TEXTURE2D_DESC ed; eyeTex->GetDesc(&ed);
     ID3D11RenderTargetView* rtv = nullptr;
