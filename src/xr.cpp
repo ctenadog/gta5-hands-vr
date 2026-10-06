@@ -31,7 +31,8 @@ int g_renderEye = 0;
 XrPoseF3 camHist[8]; int camCount = 0; std::mutex camMtx;
 // transport
 int g_method = 0;                        // method currently published or in use
-bool g_waitAck = false; ULONGLONG g_pubTime = 0; bool g_transportOk = false; int g_nextTry = bridge::M_NTNAME;
+bool g_waitAck = false; ULONGLONG g_pubTime = 0; bool g_transportOk = false; int g_tryIdx = 0;
+const int kOrder[] = {bridge::M_NTNAME, bridge::M_LEGACY, bridge::M_CPU}; const int kOrderN = 3;
 ID3D11Texture2D* g_tex = nullptr; IDXGIKeyedMutex* g_km = nullptr; HANDLE g_nt = nullptr;
 ID3D11Texture2D* g_stage[2] = {}; int g_stageIdx = 0; bool g_stageFull[2] = {}; float g_stagePose[2][7]; int g_stageEye[2];
 HANDLE g_fmap = nullptr; uint8_t* g_frm = nullptr;
@@ -208,7 +209,7 @@ void setWanted(bool on) {
         g_fatal = false;
         stopHost(true);
         readIni();
-        releaseTransport(); g_nextTry = bridge::M_NTNAME;
+        releaseTransport(); g_tryIdx = 0;
         strcpy(g_shm->runtime, g_runtime); g_shm->stereo = g_stereo ? 1 : 0; g_shm->test = g_test ? 1 : 0;
         g_shm->ackGen = 0; g_shm->ackOk = 0; g_shm->eyeW = g_shm->eyeH = 0; g_shm->hostMsg[0] = 0;
         g_shm->hostState = bridge::H_STARTING; g_shm->vr.running = false;
@@ -225,7 +226,7 @@ void setWanted(bool on) {
     }
 }
 
-bool failed() { return g_fatal; }
+bool failed() { return g_fatal && g_want; }   // 0.4.2: a failure of the previous attempt must not cancel the next F8
 
 void onPresent(ID3D11Device* dev, ID3D11DeviceContext* ctx, ID3D11Texture2D* bb) {
     if (!g_want || g_fatal || !g_shm) return;
@@ -245,15 +246,19 @@ void onPresent(ID3D11Device* dev, ID3D11DeviceContext* ctx, ID3D11Texture2D* bb)
     if (!blit::init(dev)) { fail("blit init failed"); return; }
     // transport negotiation
     if (!g_transportOk && !g_waitAck) {
-        while (g_nextTry < bridge::M_END && !publish(dev, g_nextTry)) ++g_nextTry;
-        if (g_nextTry >= bridge::M_END) { fail("no way to hand frames to the helper"); return; }
+        while (g_tryIdx < kOrderN && !publish(dev, kOrder[g_tryIdx])) ++g_tryIdx;
+        if (g_tryIdx >= kOrderN) { fail("no way to hand frames to the helper (see GTA5VR_Host.log)"); return; }
+        return;   // 0.4.2: wait for the answer from the next frame on (0.4.1 compared with a time taken BEFORE publishing -> unsigned underflow -> instant "did not answer")
     }
     if (g_waitAck) {
         if (g_shm->ackGen == g_shm->texGen) {
             g_waitAck = false;
             if (g_shm->ackOk) { g_transportOk = true; vrlog::write("xr: helper accepted transport %d - frames are flowing", g_method); }
-            else { vrlog::write("xr: helper rejected transport %d: %s", g_method, g_shm->hostMsg); releaseTransport(); ++g_nextTry; }
-        } else if (now - g_pubTime > 3000) { vrlog::write("xr: helper did not answer for transport %d", g_method); releaseTransport(); ++g_nextTry; }
+            else { vrlog::write("xr: helper rejected transport %d: %s", g_method, g_shm->hostMsg); releaseTransport(); ++g_tryIdx; }
+        } else if (now > g_pubTime && now - g_pubTime > 20000) {
+            vrlog::write("xr: helper did not answer for transport %d in 20 s (helper state %ld, heartbeat %ld, msg '%s')", g_method, (long)g_shm->hostState, (long)g_shm->heartbeat, g_shm->hostMsg);
+            releaseTransport(); ++g_tryIdx;
+        }
         return;
     }
     if (!g_transportOk) return;
