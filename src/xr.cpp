@@ -25,7 +25,7 @@ template<class T> void rel(T*& p) { if (p) { p->Release(); p = nullptr; } }
 HANDLE g_map = nullptr; bridge::Shm* g_shm = nullptr;
 HANDLE g_host = nullptr;                 // helper process
 bool g_want = false, g_fatal = false, g_test = false;
-bool g_stereo = false; int g_latency = 1; bool g_parentShell = true; char g_runtime[16] = "steamvr";
+bool g_stereo = false; int g_latency = 1; int g_cpuSize = 1800; bool g_parentShell = true; char g_runtime[16] = "steamvr";
 int g_renderEye = 0;
 // poses the script thread set the game camera to (newest last); a frame carries the one g_latency frames back
 XrPoseF3 camHist[8]; int camCount = 0; std::mutex camMtx;
@@ -53,6 +53,9 @@ void readIni() {
     g_parentShell = GetPrivateProfileIntA("vr", "host_under_explorer", 1, ini.c_str()) != 0;
     g_stereo = GetPrivateProfileIntA("vr", "stereo", 0, ini.c_str()) != 0;
     g_latency = std::max(0, std::min(6, (int)GetPrivateProfileIntA("vr", "latency", 1, ini.c_str())));
+    defInt("cpu_size", "1800");   // 0.4.5: CPU transport image height (was fixed 1440 = blurry); 0 = full headset size
+    g_cpuSize = (int)GetPrivateProfileIntA("vr", "cpu_size", 1800, ini.c_str()); if (g_cpuSize != 0) g_cpuSize = std::max(720, std::min(4096, g_cpuSize));
+    vrlog::write("xr: GTA5VR.ini cpu_size=%d (picture sharpness on transport 3; lower it if fps drops)", g_cpuSize);
     vrlog::write("xr: GTA5VR.ini runtime=%s stereo=%d latency=%d host_under_explorer=%d", g_runtime, g_stereo ? 1 : 0, g_latency, g_parentShell ? 1 : 0);
 }
 
@@ -140,7 +143,7 @@ bool publish(ID3D11Device* dev, int m) {
     uint32_t ew = g_shm->eyeW, eh = g_shm->eyeH;
     if (!ew || !eh) return false;
     g_w = ew; g_h = eh;
-    if (m == bridge::M_CPU && g_h > 1440) { g_w = (uint32_t)(g_w * 1440.0 / g_h) & ~1u; g_h = 1440; }   // keep the CPU copy affordable
+    if (m == bridge::M_CPU && g_cpuSize > 0 && g_h > (uint32_t)g_cpuSize) { g_w = (uint32_t)(g_w * (double)g_cpuSize / g_h) & ~1u; g_h = (uint32_t)g_cpuSize; }   // keep the CPU copy affordable (GTA5VR.ini cpu_size)
     D3D11_TEXTURE2D_DESC t{}; t.Width = g_w; t.Height = g_h; t.MipLevels = 1; t.ArraySize = 1; t.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
     t.SampleDesc = {1, 0}; t.Usage = D3D11_USAGE_DEFAULT; t.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
     HRESULT hr = E_FAIL; const char* step = "";

@@ -76,6 +76,7 @@ bool g_worldSpace = false;       // matrices hold world positions (else object s
 bool g_found = false, g_searched = false, g_on = false, g_wantSearch = false;
 int g_handIdx[2] = {-1, -1};     // left, right bone indices
 int g_headIdx = -1;               // SKEL_Head index
+int g_neckIdx = -1;               // SKEL_Neck_1 index: collapse point for the hidden head (0.4.5)
 // 0.4.4: head hiding. Bones of the head/face/hair = bones whose position (at search time) is within 0.25 m of the
 // head bone and not below the neck. While hiding, their rotation/scale part is written as 0.001 (vertices collapse
 // into the bone = invisible); translation is not touched. The game rebuilds the matrices every frame, so when the
@@ -100,9 +101,16 @@ DWORD WINAPI writer(LPVOID) {
         { std::lock_guard<std::mutex> l(g_wMtx); memcpy(t, g_wTarget, sizeof(t)); have[0] = g_wHave[0]; have[1] = g_wHave[1]; }
         if (g_hide.load()) {
             std::vector<int> hb; { std::lock_guard<std::mutex> l(g_wMtx); hb = g_headBones; }
+            // 0.4.5: every hidden bone is also MOVED to the neck (except SKEL_Head, whose position the safety check reads).
+            // 0.4.4 collapsed each bone at its own place: skin weighted between head and neck stretched into spikes
+            // ("artifacts"), hair/face bits stayed around. Now it all shrinks into the neck, under the camera.
+            int nk = g_neckIdx, hd = g_headIdx;
+            float np[3] = {0, 0, 0}; bool haveNeck = nk >= 0;
+            if (haveNeck) { const float* n = (const float*)(arr + (uintptr_t)nk * 64 + 48); np[0] = n[0]; np[1] = n[1]; np[2] = n[2]; }
             for (int i : hb) {
                 float* f = (float*)(arr + (uintptr_t)i * 64);
-                for (int c = 0; c < 3; ++c) for (int r = 0; r < 3; ++r) f[c * 4 + r] = (c == r) ? 0.001f : 0.f;
+                for (int c = 0; c < 3; ++c) for (int r = 0; r < 3; ++r) f[c * 4 + r] = (c == r) ? 0.0001f : 0.f;
+                if (haveNeck && i != hd) { f[12] = np[0]; f[13] = np[1]; f[14] = np[2]; }
             }
         }
         for (int h = 0; h < 2; ++h) if (have[h]) {
@@ -180,11 +188,13 @@ void search(int ped, uintptr_t pedAddr) {
         int count = natives::invoke<int>(N_GET_ENTITY_BONE_COUNT, ped);
         if (count <= 0 || count > 400) count = 200;
         g_headIdx = bones[2].index;
+        g_neckIdx = natives::invoke<int>(N_GET_PED_BONE_INDEX, ped, 39317 /*SKEL_Neck_1*/);
+        if (g_neckIdx < 0 || g_neckIdx >= count) g_neckIdx = -1;
         const float* hp = (const float*)(arr + (uintptr_t)g_headIdx * 64 + 48);
         float head[3] = {hp[0], hp[1], hp[2]};
         std::vector<int> hb;
         for (int i = 0; i < count; ++i) {
-            if (i == g_handIdx[0] || i == g_handIdx[1]) continue;
+            if (i == g_handIdx[0] || i == g_handIdx[1] || i == g_neckIdx) continue;
             uintptr_t a = arr + (uintptr_t)i * 64;
             if (!readable(a, 64)) break;
             const float* t = (const float*)(a + 48);
@@ -197,10 +207,10 @@ void search(int ped, uintptr_t pedAddr) {
                 float ex = t[0] - hp2[0], ey = t[1] - hp2[1], ez = t[2] - hp2[2];
                 if (ex*ex + ey*ey + ez*ez < 0.18f*0.18f) nearHand = true;
             }
-            if (!nearHand && dx*dx + dy*dy + dz*dz < 0.25f*0.25f && dz > -0.04f) hb.push_back(i);
+            if (!nearHand && dx*dx + dy*dy + dz*dz < 0.30f*0.30f && dz > -0.07f) hb.push_back(i);   // 0.4.5: was 0.25 m / -0.04 (hair, neck top stayed)
         }
         { std::lock_guard<std::mutex> l(g_wMtx); g_headBones = hb; }
-        vrlog::write("hands: %d head/face bones of %d will be hidden in VR", (int)hb.size(), count);
+        vrlog::write("hands: %d head/face bones of %d will be hidden in VR (collapsed into neck bone index %d)", (int)hb.size(), count, g_neckIdx);
         char path[96]; snprintf(path, sizeof(path), "ped+0x%X", g_offs[0]);
         for (int d = 1; d < g_depth; ++d) { size_t l = strlen(path); snprintf(path + l, sizeof(path) - l, " ->+0x%X", g_offs[d]); }
         vrlog::write("hands: FOUND bone matrices (%s space) at %s, %d candidates, %llu ms. (F12 = hand rotation)",
