@@ -1,0 +1,6 @@
+{"sheet":"hooks","note":"Places the .asi attaches to the game. All go through Script Hook V; no byte patterns.",
+"columns":["name","kind","target","pattern","purpose","verified"],
+"rows":[
+{"name":"script_tick","kind":"shv","target":"scriptRegister + scriptWait(0) loop","pattern":"-","purpose":"run the per-frame logic on an SHV script (natives legal there)","verified":false},
+{"name":"present","kind":"shv","target":"presentCallbackRegister","pattern":"-","purpose":"copy each rendered frame to the headset eye it was rendered for","verified":false}
+]}

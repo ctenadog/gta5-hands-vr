@@ -1,0 +1,9 @@
+{"sheet":"settings","columns":["name","value","unit","verified"],"rows":[
+{"name":"target_game_build","value":"1.0.3889.0","unit":"version","verified":false},
+{"name":"toggle_key","value":"F8","unit":"vk","verified":false},
+{"name":"world_scale","value":1.0,"unit":"game m per real m","verified":false},
+{"name":"aim_ray_length","value":60.0,"unit":"m","verified":false},
+{"name":"trigger_threshold","value":0.6,"unit":"0..1","verified":false},
+{"name":"head_bone_id","value":31086,"unit":"SKEL_Head","verified":false},
+{"name":"log_path","value":"{game}/GTA5VR.log","unit":"path","verified":false}
+]}

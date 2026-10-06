@@ -1,0 +1,15 @@
+{"sheet":"inputs","note":"OpenXR actions. Pico 4 profile = XR_BD_controller_interaction; Touch profile is the fallback most PC runtimes (SteamVR, Pico Connect) also accept.",
+"columns":["action","xr_type","path_pico4","path_touch","game_control","game_control_vehicle","axis","verified"],
+"rows":[
+{"action":"right_grip_pose","xr_type":"pose","path_pico4":"/user/hand/right/input/grip/pose","path_touch":"/user/hand/right/input/grip/pose","game_control":"-","game_control_vehicle":"-","axis":"-","verified":false},
+{"action":"left_grip_pose","xr_type":"pose","path_pico4":"/user/hand/left/input/grip/pose","path_touch":"/user/hand/left/input/grip/pose","game_control":"-","game_control_vehicle":"-","axis":"-","verified":false},
+{"action":"right_aim_pose","xr_type":"pose","path_pico4":"/user/hand/right/input/aim/pose","path_touch":"/user/hand/right/input/aim/pose","game_control":"-","game_control_vehicle":"-","axis":"-","verified":false},
+{"action":"fire","xr_type":"float","path_pico4":"/user/hand/right/input/trigger/value","path_touch":"/user/hand/right/input/trigger/value","game_control":"INPUT_ATTACK","game_control_vehicle":"INPUT_VEH_ACCELERATE","axis":"-","verified":false},
+{"action":"aim","xr_type":"float","path_pico4":"/user/hand/left/input/trigger/value","path_touch":"/user/hand/left/input/trigger/value","game_control":"INPUT_AIM","game_control_vehicle":"INPUT_VEH_BRAKE","axis":"-","verified":false},
+{"action":"move_x","xr_type":"float","path_pico4":"/user/hand/left/input/thumbstick/x","path_touch":"/user/hand/left/input/thumbstick/x","game_control":"INPUT_MOVE_LR","game_control_vehicle":"INPUT_VEH_MOVE_LR","axis":"x","verified":false},
+{"action":"move_y","xr_type":"float","path_pico4":"/user/hand/left/input/thumbstick/y","path_touch":"/user/hand/left/input/thumbstick/y","game_control":"INPUT_MOVE_UD","game_control_vehicle":"-","axis":"-y","verified":false},
+{"action":"jump","xr_type":"bool","path_pico4":"/user/hand/right/input/a/click","path_touch":"/user/hand/right/input/a/click","game_control":"INPUT_JUMP","game_control_vehicle":"-","axis":"-","verified":false},
+{"action":"enter_vehicle","xr_type":"bool","path_pico4":"/user/hand/right/input/b/click","path_touch":"/user/hand/right/input/b/click","game_control":"INPUT_ENTER","game_control_vehicle":"INPUT_ENTER","axis":"-","verified":false},
+{"action":"reload","xr_type":"bool","path_pico4":"/user/hand/left/input/x/click","path_touch":"/user/hand/left/input/x/click","game_control":"INPUT_RELOAD","game_control_vehicle":"-","axis":"-","verified":false},
+{"action":"sprint","xr_type":"bool","path_pico4":"/user/hand/left/input/thumbstick/click","path_touch":"/user/hand/left/input/thumbstick/click","game_control":"INPUT_SPRINT","game_control_vehicle":"-","axis":"-","verified":false}
+]}

@@ -1,0 +1,6 @@
+{"sheet":"arms","note":"Each arm follows one controller via SET_IK_TARGET with a world-space target (entity 0). ik_index and bone ids from nativedb comments / community; unverified in build 3889.",
+"columns":["side","ik_index","pose_action","hand_bone_id","blend_in_ms","blend_out_ms","max_reach_m","active_in_vehicle","verified"],
+"rows":[
+{"side":"left","ik_index":3,"pose_action":"left_grip_pose","hand_bone_id":18905,"blend_in_ms":0,"blend_out_ms":100,"max_reach_m":0.75,"active_in_vehicle":false,"verified":false},
+{"side":"right","ik_index":4,"pose_action":"right_grip_pose","hand_bone_id":57005,"blend_in_ms":0,"blend_out_ms":100,"max_reach_m":0.75,"active_in_vehicle":false,"verified":false}
+]}

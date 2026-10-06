@@ -1,0 +1,15 @@
+{"sheet":"game_controls","note":"GTA V control ids (pad 0). Source: alloc8or nativedb / GTA V control list. verified = checked in the running game.",
+"columns":["name","control_id","kind","verified"],
+"rows":[
+{"name":"INPUT_SPRINT","control_id":21,"kind":"button","verified":false},
+{"name":"INPUT_JUMP","control_id":22,"kind":"button","verified":false},
+{"name":"INPUT_ENTER","control_id":23,"kind":"button","verified":false},
+{"name":"INPUT_ATTACK","control_id":24,"kind":"button","verified":false},
+{"name":"INPUT_AIM","control_id":25,"kind":"button","verified":false},
+{"name":"INPUT_MOVE_LR","control_id":30,"kind":"axis","verified":false},
+{"name":"INPUT_MOVE_UD","control_id":31,"kind":"axis","verified":false},
+{"name":"INPUT_RELOAD","control_id":45,"kind":"button","verified":false},
+{"name":"INPUT_VEH_MOVE_LR","control_id":59,"kind":"axis","verified":false},
+{"name":"INPUT_VEH_ACCELERATE","control_id":71,"kind":"trigger","verified":false},
+{"name":"INPUT_VEH_BRAKE","control_id":72,"kind":"trigger","verified":false}
+]}
