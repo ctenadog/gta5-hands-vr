@@ -5,6 +5,10 @@ on:
   workflow_dispatch:
 permissions:
   contents: write
+# only the newest push builds; two parallel runs used to delete each other's release
+concurrency:
+  group: release-latest
+  cancel-in-progress: true
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -23,4 +27,5 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release delete latest -y --cleanup-tag || true
+          sleep 5
           gh release create latest build/GTA5VR-*.zip install/setup.bat install/uninstall.bat --title "GTA V Hands VR (latest)" --notes "Установка: скачайте setup.bat и запустите. Затем SteamVR -> GTA V (сюжет) -> F8. Удаление: uninstall.bat. / Install: download setup.bat and run it, then SteamVR -> GTA V story mode -> F8. Story mode only, DEV build." --prerelease
