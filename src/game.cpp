@@ -173,10 +173,7 @@ void readArmIni() {
     g_armFwd = fmaxf(-0.3f, fminf(0.5f, (int)GetPrivateProfileIntA("vr", "arm_forward", 12, d.c_str()) / 100.f));
     vrlog::write("arms: GTA5VR.ini arm_scale=%.0f%% arm_forward=%.0f cm", g_armScale * 100, g_armFwd * 100);
 }
-float g_tgt[2][3]; bool g_tgtHave[2] = {false, false};   // 0.5.1 wrist targets for hands.cpp arm override
 void armFollow(int ped, const VrState& s, bool inVehicle, float yaw, V anchor) {
-    hands::setArmTargets(nullptr, nullptr);
-    g_tgtHave[0] = g_tgtHave[1] = false;
     if (!g_armsOn) return;
     readArmIni();
     natives::invoke(N_SET_PED_CAN_ARM_IK, ped, 1);
@@ -190,11 +187,6 @@ void armFollow(int ped, const VrState& s, bool inVehicle, float yaw, V anchor) {
         rel = {rel.x * g_armScale + hf.x * g_armFwd, rel.y * g_armScale + hf.y * g_armFwd, rel.z * g_armScale};
         if (len(rel) > a.maxReach) { float k = a.maxReach / len(rel); rel = {rel.x*k, rel.y*k, rel.z*k}; }
         V target = add(anchor, rel);
-        {   // 0.5.1: same target for the skeleton override in hands.cpp (replaces the game's arm animation)
-            int sd = (a.ikIndex == kArms[0].ikIndex) ? 0 : 1;
-            g_tgt[sd][0] = target.x; g_tgt[sd][1] = target.y; g_tgt[sd][2] = target.z; g_tgtHave[sd] = true;
-            hands::setArmTargets(g_tgtHave[0] ? g_tgt[0] : nullptr, g_tgtHave[1] ? g_tgt[1] : nullptr);
-        }
         natives::invoke(N_SET_IK_TARGET, ped, a.ikIndex, 0, 0, target.x, target.y, target.z, 0, a.blendIn, a.blendOut);
         static int dbg = 0;
         if (dbg < 6) { ++dbg; vrlog::write("arm %s: controller rel (%.2f %.2f %.2f) target (%.1f %.1f %.1f) anchor z %.1f", a.side, rel.x, rel.y, rel.z, target.x, target.y, target.z, anchor.z); }
