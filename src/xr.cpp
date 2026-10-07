@@ -45,20 +45,16 @@ std::string gameDir() { char m[MAX_PATH]; GetModuleFileNameA(nullptr, m, MAX_PAT
 
 void readIni() {
     std::string ini = gameDir() + "GTA5VR.ini";
-    auto defInt = [&](const char* k, const char* v) { if (GetPrivateProfileIntA("vr", k, -12345, ini.c_str()) == -12345) WritePrivateProfileStringA("vr", k, v, ini.c_str()); };
     char rt[16]; GetPrivateProfileStringA("vr", "runtime", "", rt, sizeof rt, ini.c_str());
-    if (!rt[0]) { WritePrivateProfileStringA("vr", "runtime", "steamvr", ini.c_str()); strcpy(rt, "steamvr"); }
+    if (!rt[0]) strcpy(rt, "steamvr");
     strcpy(g_runtime, _stricmp(rt, "system") == 0 ? "system" : "steamvr");
-    defInt("stereo", "0"); defInt("latency", "1"); defInt("host_under_explorer", "1");
     g_parentShell = GetPrivateProfileIntA("vr", "host_under_explorer", 1, ini.c_str()) != 0;
     g_stereo = GetPrivateProfileIntA("vr", "stereo", 0, ini.c_str()) != 0;
     g_latency = std::max(0, std::min(6, (int)GetPrivateProfileIntA("vr", "latency", 1, ini.c_str())));
-    defInt("cpu_size", "1800");   // 0.4.5: CPU transport image height (was fixed 1440 = blurry); 0 = full headset size
     g_cpuSize = (int)GetPrivateProfileIntA("vr", "cpu_size", 1800, ini.c_str()); if (g_cpuSize != 0) g_cpuSize = std::max(720, std::min(4096, g_cpuSize));
     vrlog::write("xr: GTA5VR.ini cpu_size=%d (picture sharpness on transport 3; lower it if fps drops)", g_cpuSize);
     // minimap: position / height in % of the headset image. 0.5.0: the radar's place in GTA's frame is computed by the
     // game script from the safe-zone setting (0.4.9 guessed 19%x25% of a 16:9 frame: cut off / extra picture).
-    defInt("minimap", "1"); defInt("minimap_x", "20"); defInt("minimap_y", "66"); defInt("minimap_size", "22");
     {
         auto gi = [&](const char* k, int dv) { return (int)GetPrivateProfileIntA("vr", k, dv, ini.c_str()); };
         bool on = gi("minimap", 1) != 0;

@@ -324,14 +324,9 @@ void tick(int ped, const XrPoseF3* gripLeftRight[2], float yawDeg) {
     uintptr_t pedAddr = (uintptr_t)shv::entityAddress(ped);
     if (g_rotIni < 0) {
         char m[MAX_PATH]; GetModuleFileNameA(nullptr, m, MAX_PATH); std::string d = m; d = d.substr(0, d.find_last_of("\\/") + 1) + "GTA5VR.ini";
-        if (GetPrivateProfileIntA("vr", "hand_rotation", -12345, d.c_str()) == -12345) WritePrivateProfileStringA("vr", "hand_rotation", "1", d.c_str());
-        if (GetPrivateProfileIntA("vr", "hand_pitch", -12345, d.c_str()) == -12345) WritePrivateProfileStringA("vr", "hand_pitch", "0", d.c_str());
         g_rotIni = GetPrivateProfileIntA("vr", "hand_rotation", 1, d.c_str()) ? 1 : 0;
         g_pitchOff = (int)GetPrivateProfileIntA("vr", "hand_pitch", 0, d.c_str()) * 0.0174533f;
         // 0.4.7: hand_flip (1 = fixed direction, 0 = 0.4.6 behaviour), hand_yaw / hand_roll extra offsets in degrees
-        if (GetPrivateProfileIntA("vr", "hand_flip", -12345, d.c_str()) == -12345) WritePrivateProfileStringA("vr", "hand_flip", "1", d.c_str());
-        if (GetPrivateProfileIntA("vr", "hand_yaw", -12345, d.c_str()) == -12345) WritePrivateProfileStringA("vr", "hand_yaw", "0", d.c_str());
-        if (GetPrivateProfileIntA("vr", "hand_roll", -12345, d.c_str()) == -12345) WritePrivateProfileStringA("vr", "hand_roll", "0", d.c_str());
         g_flip = GetPrivateProfileIntA("vr", "hand_flip", 1, d.c_str()) ? 1 : 0;
         g_yawOff = (int)GetPrivateProfileIntA("vr", "hand_yaw", 0, d.c_str()) * 0.0174533f;
         g_rollOff = (int)GetPrivateProfileIntA("vr", "hand_roll", 0, d.c_str()) * 0.0174533f;
@@ -350,7 +345,7 @@ void tick(int ped, const XrPoseF3* gripLeftRight[2], float yawDeg) {
         }
     }
     if (g_rotIni == 1 && !g_userOff && !g_searched && !g_wantSearch && g_autoSearch < 3) { ++g_autoSearch; g_wantSearch = true; vrlog::write("hands: searching the skeleton for hand rotation (game may pause ~1 s)"); }
-    if (g_rotIni == 1 && !g_userOff && g_found && !g_on) { g_on = true; g_lastSet[0] = g_lastSet[1] = false; vrlog::write("hands: hand rotation ON (F12 = off)"); }
+    if (g_rotIni == 1 && !g_userOff && g_found && !g_on) { g_on = true; g_lastSet[0] = g_lastSet[1] = false; vrlog::write("hands: hand rotation ON"); }
     if (g_on && !g_wThread) g_wThread = CreateThread(nullptr, 0, writer, nullptr, 0, nullptr);
     if (!g_searched) {
         if (!g_wantSearch) return;
