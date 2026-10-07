@@ -57,8 +57,8 @@ function Remove-Old($p) {
 foreach ($d in $game, (Join-Path $game 'scripts'), (Join-Path $game 'plugins'), (Join-Path $game 'asi')) {
   foreach ($f in 'GTA5VR.asi','GTA5VR.asi.off','GTA5VR.asi.bak') { Remove-Old (Join-Path $d $f) }
 }
-foreach ($f in 'openxr_loader.dll','GTA5VR_Host.exe','xrtest.exe','xrtest.log','GTA5VR.ini',
-               'GTA5VR.log','GTA5VR.old.log','GTA5VR_Host.log','GTA5VR_Host.old.log',
+foreach ($f in 'openxr_loader.dll','GTA5VR_Host.exe','xrtest.exe','xrtest.log','GTA5VR.ini','GTA5VR.ini.old',
+               'GTA5VR.log','GTA5VR.old.log','GTA5VR_update.log','GTA5VR_Host.log','GTA5VR_Host.old.log',
                'GTA5VR-README.txt','README_RU.txt','install.bat','install.ps1','steamxr_win64.json') { Remove-Old (Join-Path $game $f) }
 Remove-Old (Join-Path $game 'GTA5VR')
 $lic = Join-Path $game 'licenses'
@@ -68,6 +68,7 @@ foreach ($src in (Get-ChildItem $game -Directory -Filter 'gta5-hands-vr*' -Error
   if ($here -and $here.StartsWith($src.FullName)) { Say "  $($src.Name): скрипт запущен из неё - удалите её вручную" } else { Remove-Old $src.FullName }
 }
 Remove-Item (Join-Path $env:TEMP 'GTA5VR-setup') -Recurse -Force -ErrorAction SilentlyContinue
+Remove-Item (Join-Path $env:TEMP 'GTA5VR-update') -Recurse -Force -ErrorAction SilentlyContinue
 if ($script:n -eq 0) { Say '  файлов мода не найдено' }
 
 Step '3/3 Script Hook V и ASI-загрузчик'
