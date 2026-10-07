@@ -89,7 +89,7 @@ std::vector<int> g_headBones; std::atomic<bool> g_hide{false};
 int g_fing[2][20]; int g_fingN[2] = {0, 0}; int g_kIdx[2] = {-1, -1}, g_kMid[2] = {-1, -1}, g_kPinky[2] = {-1, -1};
 float g_last[2][9]; bool g_lastSet[2] = {false, false};
 std::atomic<unsigned> g_wApplied{0}; std::atomic<int> g_lastAngle[2] = {{0}, {0}};
-bool g_userOff = false; int g_rotIni = -1; int g_autoSearch = 0; float g_pitchOff = 0.f;
+bool g_userOff = false; int g_rotIni = -1; int g_autoSearch = 0; float g_pitchOff = 0.f, g_yawOff = 0.f, g_rollOff = 0.f; int g_flip = 1;
 // Background writer: the game recomputes the skeleton after scripts run (0.2.9 log: "overwritten by the game"), so a
 // write from the script thread is lost before rendering. A separate thread re-writes the target rotation continuously,
 // hitting the window between the animation update and the copy to the renderer. Translation is never touched.
@@ -293,7 +293,14 @@ void tick(int ped, const XrPoseF3* gripLeftRight[2], float yawDeg) {
         if (GetPrivateProfileIntA("vr", "hand_pitch", -12345, d.c_str()) == -12345) WritePrivateProfileStringA("vr", "hand_pitch", "0", d.c_str());
         g_rotIni = GetPrivateProfileIntA("vr", "hand_rotation", 1, d.c_str()) ? 1 : 0;
         g_pitchOff = (int)GetPrivateProfileIntA("vr", "hand_pitch", 0, d.c_str()) * 0.0174533f;
-        vrlog::write("hands: GTA5VR.ini hand_rotation=%d hand_pitch=%.0f", g_rotIni, g_pitchOff * 57.3f);
+        // 0.4.7: hand_flip (1 = fixed direction, 0 = 0.4.6 behaviour), hand_yaw / hand_roll extra offsets in degrees
+        if (GetPrivateProfileIntA("vr", "hand_flip", -12345, d.c_str()) == -12345) WritePrivateProfileStringA("vr", "hand_flip", "1", d.c_str());
+        if (GetPrivateProfileIntA("vr", "hand_yaw", -12345, d.c_str()) == -12345) WritePrivateProfileStringA("vr", "hand_yaw", "0", d.c_str());
+        if (GetPrivateProfileIntA("vr", "hand_roll", -12345, d.c_str()) == -12345) WritePrivateProfileStringA("vr", "hand_roll", "0", d.c_str());
+        g_flip = GetPrivateProfileIntA("vr", "hand_flip", 1, d.c_str()) ? 1 : 0;
+        g_yawOff = (int)GetPrivateProfileIntA("vr", "hand_yaw", 0, d.c_str()) * 0.0174533f;
+        g_rollOff = (int)GetPrivateProfileIntA("vr", "hand_roll", 0, d.c_str()) * 0.0174533f;
+        vrlog::write("hands: GTA5VR.ini hand_rotation=%d hand_flip=%d hand_pitch=%.0f hand_yaw=%.0f hand_roll=%.0f", g_rotIni, g_flip, g_pitchOff * 57.3f, g_yawOff * 57.3f, g_rollOff * 57.3f);
     }
     if (g_rotIni == 1 && !g_userOff && !g_searched && !g_wantSearch && g_autoSearch < 3) { ++g_autoSearch; g_wantSearch = true; vrlog::write("hands: searching the skeleton for hand rotation (game may pause ~1 s)"); }
     if (g_rotIni == 1 && !g_userOff && g_found && !g_on) { g_on = true; g_lastSet[0] = g_lastSet[1] = false; vrlog::write("hands: hand rotation ON (F12 = off)"); }
@@ -331,11 +338,15 @@ void tick(int ped, const XrPoseF3* gripLeftRight[2], float yawDeg) {
         const XrPoseF3* p = gripLeftRight[h];
         if (!p || !p->valid) { std::lock_guard<std::mutex> l(g_wMtx); g_wHave[h] = false; continue; }
         // controller axes (OpenXR grip: -Z forward, +Y up), optional pitch offset about the controller X axis
-        float cp = cosf(g_pitchOff), sp = sinf(g_pitchOff);
-        M3 R = mul(fromQuat(p->qx, p->qy, p->qz, p->qw), M3{{{1,0,0},{0,cp,-sp},{0,sp,cp}}});
+        float cp = cosf(g_pitchOff), sp = sinf(g_pitchOff), cy = cosf(g_yawOff), sy = sinf(g_yawOff), cr = cosf(g_rollOff), sr = sinf(g_rollOff);
+        M3 R = mul(mul(mul(fromQuat(p->qx, p->qy, p->qz, p->qw), M3{{{1,0,0},{0,cp,-sp},{0,sp,cp}}}), M3{{{cy,0,sy},{0,1,0},{-sy,0,cy}}}), M3{{{cr,-sr,0},{sr,cr,0},{0,0,1}}});
         // A fist closed around the controller handle: the knuckle row (pinky -> index) runs along the handle = grip -Z,
         // wrist -> middle knuckle is across it = grip +Y. (0.3.x-0.4.5 effectively matched hand forward to -Z: wrists bent.)
-        float fx[3] = {R.m[0][1], R.m[1][1], R.m[2][1]}, ux[3] = {-R.m[0][2], -R.m[1][2], -R.m[2][2]};
+        // 0.4.7: OpenXR grip +X = right (palm side reversed per hand), -Z = fist axis, +Y = Z x X. Holding a pistol grip
+        // (-Z up, +X right) gives +Y = BACKWARD, so wrist -> knuckles (forward) is grip -Y. 0.4.6 used +Y: every hand was
+        // turned 180 deg about the knuckle row (log: "angle to controller" 150-175 deg, pistol pointing at the player).
+        float sg = g_flip ? -1.f : 1.f;
+        float fx[3] = {sg * R.m[0][1], sg * R.m[1][1], sg * R.m[2][1]}, ux[3] = {-R.m[0][2], -R.m[1][2], -R.m[2][2]};
         M3 Mw = xrToGtaRot(yawDeg);
         float fw[3], uw[3];
         for (int i = 0; i < 3; ++i) { fw[i] = Mw.m[i][0]*fx[0] + Mw.m[i][1]*fx[1] + Mw.m[i][2]*fx[2]; uw[i] = Mw.m[i][0]*ux[0] + Mw.m[i][1]*ux[1] + Mw.m[i][2]*ux[2]; }
