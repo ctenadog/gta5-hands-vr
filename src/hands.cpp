@@ -86,7 +86,10 @@ std::vector<int> g_headBones; std::atomic<bool> g_hide{false};
 // (wrist -> middle-finger knuckle = forward, pinky knuckle -> index knuckle = up), the wanted frame from the controller
 // grip pose (-Z = forward, +Y = up), and the difference is applied to the hand AND all its finger bones around the wrist.
 // 0.3.0-0.4.5 rotated only the hand matrix with a calibration taken at F12 -> fingers stayed behind, sleeves/arms stretched.
-int g_fing[2][20]; int g_fingN[2] = {0, 0}; int g_kIdx[2] = {-1, -1}, g_kMid[2] = {-1, -1}, g_kPinky[2] = {-1, -1};
+int g_fing[2][48]; int g_fingN[2] = {0, 0};
+// 0.6.1: forearm roll (twist) bone + forearm bone per hand. Skin around the wrist is weighted to the roll bone; it got
+// no twist when the hand turned, so one side of the wrist stretched / sagged (user: "one corner of the model pulls down").
+int g_roll[2] = {-1, -1}, g_fore[2] = {-1, -1}; std::atomic<int> g_lastTwist[2] = {{0}, {0}}; int g_kIdx[2] = {-1, -1}, g_kMid[2] = {-1, -1}, g_kPinky[2] = {-1, -1};
 float g_last[2][9]; bool g_lastSet[2] = {false, false};
 std::atomic<unsigned> g_wApplied{0}; std::atomic<int> g_lastAngle[2] = {{0}, {0}};
 bool g_userOff = false; int g_rotIni = -1; int g_autoSearch = 0; float g_pitchOff = 0.f, g_yawOff = 0.f, g_rollOff = 0.f; int g_flip = 1;
@@ -122,6 +125,35 @@ void applyHand(uintptr_t arr, int h, const float tgt[3][3]) {
         for (int c = 0; c < 3; ++c) { float v[3] = {B[c*4], B[c*4+1], B[c*4+2]}; for (int i = 0; i < 3; ++i) B[c*4+i] = D.m[i][0]*v[0] + D.m[i][1]*v[1] + D.m[i][2]*v[2]; }
         if (movePos) { float p[3] = {B[12] - wp[0], B[13] - wp[1], B[14] - wp[2]}; for (int i = 0; i < 3; ++i) B[12+i] = wp[i] + D.m[i][0]*p[0] + D.m[i][1]*p[1] + D.m[i][2]*p[2]; }
     };
+    // forearm roll bone: half of the hand's twist about the forearm axis (how the game's own rig drives it)
+    if (g_roll[h] >= 0 && g_fore[h] >= 0) {
+        const float* fp = (const float*)(arr + (uintptr_t)g_fore[h] * 64 + 48);
+        float a[3] = {wp[0] - fp[0], wp[1] - fp[1], wp[2] - fp[2]};
+        float al = sqrtf(a[0]*a[0] + a[1]*a[1] + a[2]*a[2]);
+        if (al > 0.05f && al < 0.6f) {
+            for (int i = 0; i < 3; ++i) a[i] /= al;
+            float p0[3], p1[3];
+            float du = u[0]*a[0] + u[1]*a[1] + u[2]*a[2];
+            for (int i = 0; i < 3; ++i) p0[i] = u[i] - du * a[i];
+            float v[3]; for (int i = 0; i < 3; ++i) v[i] = D.m[i][0]*u[0] + D.m[i][1]*u[1] + D.m[i][2]*u[2];
+            float dv = v[0]*a[0] + v[1]*a[1] + v[2]*a[2];
+            for (int i = 0; i < 3; ++i) p1[i] = v[i] - dv * a[i];
+            float n0 = sqrtf(p0[0]*p0[0] + p0[1]*p0[1] + p0[2]*p0[2]), n1 = sqrtf(p1[0]*p1[0] + p1[1]*p1[1] + p1[2]*p1[2]);
+            if (n0 > 0.2f && n1 > 0.2f) {
+                float c = (p0[0]*p1[0] + p0[1]*p1[1] + p0[2]*p1[2]) / (n0 * n1);
+                float x[3] = {p0[1]*p1[2] - p0[2]*p1[1], p0[2]*p1[0] - p0[0]*p1[2], p0[0]*p1[1] - p0[1]*p1[0]};
+                float sgn = (x[0]*a[0] + x[1]*a[1] + x[2]*a[2]) < 0 ? -1.f : 1.f;
+                float ang = sgn * acosf(fmaxf(-1.f, fminf(1.f, c))) * 0.5f;
+                g_lastTwist[h] = (int)(ang * 2.f * 57.3f);
+                float cs = cosf(ang), sn = sinf(ang), t = 1.f - cs;
+                M3 R{{{t*a[0]*a[0] + cs,      t*a[0]*a[1] - sn*a[2], t*a[0]*a[2] + sn*a[1]},
+                      {t*a[0]*a[1] + sn*a[2], t*a[1]*a[1] + cs,      t*a[1]*a[2] - sn*a[0]},
+                      {t*a[0]*a[2] - sn*a[1], t*a[1]*a[2] + sn*a[0], t*a[2]*a[2] + cs}}};
+                float* B = (float*)(arr + (uintptr_t)g_roll[h] * 64);
+                for (int cc = 0; cc < 3; ++cc) { float vv[3] = {B[cc*4], B[cc*4+1], B[cc*4+2]}; for (int i = 0; i < 3; ++i) B[cc*4+i] = R.m[i][0]*vv[0] + R.m[i][1]*vv[1] + R.m[i][2]*vv[2]; }
+            }
+        }
+    }
     for (int k = 0; k < g_fingN[h]; ++k) rotBone(g_fing[h][k], true);
     rotBone(g_handIdx[h], false);
     for (int c = 0; c < 3; ++c) for (int rr = 0; rr < 3; ++rr) g_last[h][c * 3 + rr] = H[c * 4 + rr];
@@ -224,6 +256,33 @@ void buildLists(int ped, uintptr_t pedAddr, const M3& E, const std::vector<Bone>
             }
             vrlog::write("hands: %s hand %d finger bones, knuckles index %d middle %d pinky %d", h ? "right" : "left", g_fingN[h], g_kIdx[h], g_kMid[h], g_kPinky[h]);
         }
+        // 0.6.1: every other bone of this model that sits in the hand (past the wrist, within 16 cm) turns with the hand -
+        // models differ (Trevor / Michael / Franklin have extra helper bones the fixed finger list missed)
+        int extra[2] = {0, 0};
+        for (int h = 0; h < 2; ++h) {
+            g_fore[h] = natives::invoke<int>(N_GET_PED_BONE_INDEX, ped, h ? 28252 : 61163);   // SKEL_R/L_Forearm
+            g_roll[h] = natives::invoke<int>(N_GET_PED_BONE_INDEX, ped, h ? 43810 : 61007);   // RB_R/L_ForeArmRoll
+            if (g_fore[h] < 0 || g_fore[h] >= count || g_fore[h] == g_handIdx[h]) g_fore[h] = -1;
+            if (g_roll[h] < 0 || g_roll[h] >= count || g_roll[h] == g_handIdx[h] || g_roll[h] == g_fore[h]) g_roll[h] = -1;
+            if (g_kMid[h] < 0) continue;
+            const float* w = (const float*)(arr + (uintptr_t)g_handIdx[h] * 64 + 48);
+            const float* km = (const float*)(arr + (uintptr_t)g_kMid[h] * 64 + 48);
+            float f[3] = {km[0] - w[0], km[1] - w[1], km[2] - w[2]}; nrm(f);
+            for (int i = 0; i < count && g_fingN[h] < 48; ++i) {
+                if (i == g_handIdx[0] || i == g_handIdx[1] || i == g_roll[h] || i == g_fore[h] || i == g_headIdx || i == g_neckIdx) continue;
+                bool have = false; for (int k = 0; k < g_fingN[h]; ++k) if (g_fing[h][k] == i) have = true;
+                for (int k = 0; k < g_fingN[h ^ 1]; ++k) if (g_fing[h ^ 1][k] == i) have = true;
+                for (int b : hb) if (b == i) have = true;
+                if (have) continue;
+                uintptr_t a = arr + (uintptr_t)i * 64;
+                if (!readable(a, 64)) break;
+                const float* t = (const float*)(a + 48);
+                float d[3] = {t[0] - w[0], t[1] - w[1], t[2] - w[2]};
+                float along = d[0]*f[0] + d[1]*f[1] + d[2]*f[2], dist = sqrtf(d[0]*d[0] + d[1]*d[1] + d[2]*d[2]);
+                if (along > 0.01f && dist < 0.16f) { g_fing[h][g_fingN[h]++] = i; ++extra[h]; }
+            }
+        }
+        vrlog::write("hands: extra hand bones L %d R %d, forearm roll bone L %d R %d (forearm %d/%d)", extra[0], extra[1], g_roll[0], g_roll[1], g_fore[0], g_fore[1]);
         vrlog::write("hands: %d head/face bones of %d will be hidden in VR (collapsed into neck bone index %d)", (int)hb.size(), count, g_neckIdx);
         char path[96]; snprintf(path, sizeof(path), "ped+0x%X", g_offs[0]);
         for (int d = 1; d < g_depth; ++d) { size_t l = strlen(path); snprintf(path + l, sizeof(path) - l, " ->+0x%X", g_offs[d]); }
@@ -372,7 +431,7 @@ void tick(int ped, const XrPoseF3* gripLeftRight[2], float yawDeg) {
     }
     if (!g_on) { g_wArr = arr; g_wBeat = GetTickCount64(); return; }   // head hiding only
     static ULONGLONG lastRate = 0;
-    if (GetTickCount64() - lastRate > 5000) { lastRate = GetTickCount64(); vrlog::write("hands: rotation applied %u times in 5 s (writer passes %u), angle to controller L %d R %d deg", g_wApplied.exchange(0), g_wCount.exchange(0), g_lastAngle[0].load(), g_lastAngle[1].load()); }
+    if (GetTickCount64() - lastRate > 5000) { lastRate = GetTickCount64(); vrlog::write("hands: rotation applied %u times in 5 s (writer passes %u), angle to controller L %d R %d deg, wrist twist L %d R %d deg", g_wApplied.exchange(0), g_wCount.exchange(0), g_lastAngle[0].load(), g_lastAngle[1].load(), g_lastTwist[0].load(), g_lastTwist[1].load()); }
     int maxIdx = 0; for (int h = 0; h < 2; ++h) { maxIdx = maxIdx > g_handIdx[h] ? maxIdx : g_handIdx[h]; for (int k = 0; k < g_fingN[h]; ++k) maxIdx = maxIdx > g_fing[h][k] ? maxIdx : g_fing[h][k]; }
     if (!readable(arr, (size_t)(maxIdx + 1) * 64) || !writable(arr + (uintptr_t)g_handIdx[0] * 64, 48) || !writable(arr + (uintptr_t)maxIdx * 64, 64)) { g_wArr = 0; vrlog::write("hands: matrices not writable - rotation off"); g_on = false; g_userOff = true; return; }
     M3 Et = tr(E);
