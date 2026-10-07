@@ -16,14 +16,16 @@ ID3D11SamplerState* g_smp = nullptr; ID3D11Buffer* g_cb = nullptr;
 ID3D11RasterizerState* g_rs = nullptr; ID3D11BlendState* g_bs = nullptr; ID3D11DepthStencilState* g_ds = nullptr;
 ID3D11Texture2D* g_tmp = nullptr; ID3D11ShaderResourceView* g_srv = nullptr; D3D11_TEXTURE2D_DESC g_tmpDesc{};
 bool g_ok = false;
+float g_mm[8] = {0,0,0,0,-1,-1,-1,-1};   // 0.4.9 minimap overlay: source rect (backbuffer uv), dest rect (eye uv), dest x<0 = off
 
 const char* kHlsl =
-"cbuffer C : register(b0) { float4 p; };\n"
+"cbuffer C : register(b0) { float4 p; float4 m; float4 d; };\n"
 "Texture2D t : register(t0); SamplerState s : register(s0);\n"
 "struct VO { float4 pos : SV_Position; float2 uv : TEXCOORD0; };\n"
 "VO vs(uint id : SV_VertexID) { VO o; float2 uv = float2((id << 1) & 2, id & 2);\n"
 "  o.pos = float4(uv * float2(2, -2) + float2(-1, 1), 0, 1); o.uv = uv; return o; }\n"
 "float4 ps(VO i) : SV_Target { float2 uv = float2(p.y + i.uv.x * p.x, i.uv.y);\n"
+"  if (d.x >= 0 && i.uv.x >= d.x && i.uv.x <= d.z && i.uv.y >= d.y && i.uv.y <= d.w) uv = lerp(m.xy, m.zw, (i.uv - d.xy) / (d.zw - d.xy));\n"
 "  float4 c = t.Sample(s, uv); if (p.w > 0.5) c = float4(i.uv.x, i.uv.y, 0.5 + 0.5 * step(0.5, frac(i.uv.x * 8)), 1);\n"
 "  if (p.z > 0.5) c.rgb = pow(abs(c.rgb), 2.2); return float4(c.rgb, 1); }\n";
 
@@ -49,7 +51,7 @@ bool init(ID3D11Device* dev) {
     D3D11_SAMPLER_DESC sd{}; sd.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
     sd.AddressU = sd.AddressV = sd.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP; sd.MaxLOD = D3D11_FLOAT32_MAX;
     dev->CreateSamplerState(&sd, &g_smp);
-    D3D11_BUFFER_DESC bd{}; bd.ByteWidth = 16; bd.Usage = D3D11_USAGE_DEFAULT; bd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+    D3D11_BUFFER_DESC bd{}; bd.ByteWidth = 48; bd.Usage = D3D11_USAGE_DEFAULT; bd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
     dev->CreateBuffer(&bd, nullptr, &g_cb);
     D3D11_RASTERIZER_DESC rd{}; rd.FillMode = D3D11_FILL_SOLID; rd.CullMode = D3D11_CULL_NONE; rd.DepthClipEnable = TRUE;
     dev->CreateRasterizerState(&rd, &g_rs);
@@ -92,7 +94,14 @@ bool draw(ID3D11DeviceContext* ctx, ID3D11Texture2D* bb, ID3D11Texture2D* eyeTex
     }
     // centre crop: the game camera's vertical fov = eye fov, so take a slice of width height*eyeAspect
     float sx = (float)bd.Height * eyeAspect / (float)bd.Width; if (sx > 1.f) sx = 1.f;
-    float cb[4] = {sx, 0.5f - 0.5f * sx, linearize ? 1.f : 0.f, testPattern ? 1.f : 0.f};
+    float cb[12] = {sx, 0.5f - 0.5f * sx, linearize ? 1.f : 0.f, testPattern ? 1.f : 0.f};
+    // minimap: the radar sits in the bottom-left corner of the 16:9 frame, which the centre crop cuts away.
+    // Its source width is given for 16:9 and rescaled to the real backbuffer aspect.
+    if (g_mm[4] >= 0.f) {
+        float k = (16.f / 9.f) / ((float)bd.Width / (float)bd.Height);
+        cb[4] = g_mm[0] * k; cb[5] = g_mm[1]; cb[6] = g_mm[2] * k; cb[7] = g_mm[3];
+        for (int i = 0; i < 4; ++i) cb[8 + i] = g_mm[4 + i];
+    } else { cb[8] = cb[9] = cb[10] = cb[11] = -1.f; }
 
     ID3D11DeviceContext1* c1 = nullptr; ctx->QueryInterface(__uuidof(ID3D11DeviceContext1), (void**)&c1);
     if (!c1) { rtv->Release(); return false; }
@@ -115,4 +124,7 @@ bool draw(ID3D11DeviceContext* ctx, ID3D11Texture2D* bb, ID3D11Texture2D* eyeTex
 }
 
 void reset() { rel(g_srv); rel(g_tmp); }
+void setMinimap(bool on, float sx0, float sy0, float sx1, float sy1, float dx0, float dy0, float dx1, float dy1) {
+    float v[8] = {sx0, sy0, sx1, sy1, on ? dx0 : -1.f, dy0, dx1, dy1}; memcpy(g_mm, v, sizeof v);
+}
 }

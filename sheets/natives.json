@@ -42,6 +42,20 @@
   {"name": "GET_SELECTED_PED_WEAPON", "hash": "0x0A6DB4965674D243", "args": "Ped ped", "ret": "Hash", "verified": false},
   {"name": "TASK_ENTER_VEHICLE", "hash": "0xC20E50AA46D09CA8", "args": "Ped ped, Vehicle vehicle, int timeout, int seat, float speed, int flag, const char* overrideEntryClipsetName", "ret": "void", "verified": false},
   {"name": "TASK_LEAVE_VEHICLE", "hash": "0xD3DBCE61A490BE02", "args": "Ped ped, Vehicle vehicle, int flags", "ret": "void", "verified": false},
-  {"name": "GET_CLOSEST_VEHICLE", "hash": "0xF73EB622C4F1689B", "args": "float x, float y, float z, float radius, Hash modelHash, int flags", "ret": "Vehicle", "verified": false}
+  {"name": "GET_CLOSEST_VEHICLE", "hash": "0xF73EB622C4F1689B", "args": "float x, float y, float z, float radius, Hash modelHash, int flags", "ret": "Vehicle", "verified": false},
+  {"name": "START_EXPENSIVE_SYNCHRONOUS_SHAPE_TEST_LOS_PROBE", "hash": "0x377906D8A31E5586", "args": "float x1, float y1, float z1, float x2, float y2, float z2, int flags, int entity, int p8", "ret": "int", "verified": false},
+  {"name": "GET_SHAPE_TEST_RESULT", "hash": "0x3D87450E15D98694", "args": "int handle, int* hit, Vector3* end, Vector3* normal, int* entity", "ret": "int", "verified": false},
+  {"name": "GET_SCREEN_COORD_FROM_WORLD_COORD", "hash": "0x34E82F05DF2974F5", "args": "float x, float y, float z, float* sx, float* sy", "ret": "int", "verified": false},
+  {"name": "DRAW_RECT", "hash": "0x3A618A217E5154F0", "args": "float x, float y, float w, float h, int r, int g, int b, int a, int p8", "ret": "void", "verified": false},
+  {"name": "IS_PED_ARMED", "hash": "0x475768A975D5AD17", "args": "int ped, int typeFlags", "ret": "int", "verified": false},
+  {"name": "GET_FRAME_TIME", "hash": "0x15C40837039FFAF7", "args": "none", "ret": "float", "verified": false},
+  {"name": "SET_ENTITY_HEADING", "hash": "0x8E2530AA8ADA980E", "args": "int entity, float heading", "ret": "void", "verified": false},
+  {"name": "IS_PED_RAGDOLL", "hash": "0x47E4E977581C5B55", "args": "int ped", "ret": "int", "verified": false},
+  {"name": "IS_PED_GETTING_INTO_A_VEHICLE", "hash": "0xBB062B2B5722478E", "args": "int ped", "ret": "int", "verified": false},
+  {"name": "GET_SAFE_ZONE_SIZE", "hash": "0xBAF107B6BB2C97F0", "args": "none", "ret": "float", "verified": false},
+  {"name": "GET_ASPECT_RATIO", "hash": "0xF1307EF624A80D87", "args": "int b", "ret": "float", "verified": false},
+  {"name": "IS_RADAR_HIDDEN", "hash": "0x157F93B036700462", "args": "none", "ret": "int", "verified": false},
+  {"name": "HIDE_HUD_COMPONENT_THIS_FRAME", "hash": "0x6806C51AD12B83B8", "args": "int id", "ret": "void", "verified": false},
+  {"name": "DISPLAY_RADAR", "hash": "0xA0EBB943C300E693", "args": "int toggle", "ret": "void", "verified": false}
  ]
 }
