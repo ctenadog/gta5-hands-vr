@@ -12,10 +12,23 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - name: Install mingw-w64
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq mingw-w64 zip unzip
+        timeout-minutes: 15
+        run: |
+          # apt on the runner sometimes hangs on the default mirror: limit each try, then switch mirror
+          for i in 1 2 3; do
+            if timeout 240 sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 update -qq && \
+               timeout 300 sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 install -y -qq --no-install-recommends mingw-w64 zip unzip; then
+              exit 0
+            fi
+            echo "apt try $i failed - switching mirror"
+            sudo sed -i -E 's#https?://[a-z.]*archive\.ubuntu\.com/ubuntu#http://mirror.yandex.ru/ubuntu#g' /etc/apt/sources.list /etc/apt/sources.list.d/*.sources 2>/dev/null || true
+            [ $i = 2 ] && sudo sed -i -E 's#http://mirror\.yandex\.ru/ubuntu#http://archive.ubuntu.com/ubuntu#g' /etc/apt/sources.list /etc/apt/sources.list.d/*.sources 2>/dev/null || true
+          done
+          exit 1
       - name: Build
         run: sh ci/build.sh
       - uses: actions/upload-artifact@v4
