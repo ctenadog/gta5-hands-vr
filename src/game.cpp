@@ -2,6 +2,8 @@
 // One function per row of sheets/systems.json (in_v01 = true).
 #include <windows.h>
 #include <cmath>
+#include <cstring>
+#include <algorithm>
 #include <string>
 #include <type_traits>
 #include "natives.h"
@@ -42,6 +44,7 @@ float headYawGta(const XrPoseF3& h) { V f = qrot(h, {0,0,-1}); V g = xrToGta(f, 
 // recenter (F8/F9) and right-stick turning - NOT when the character turns while walking (that made the view swing).
 float g_baseYaw = 0.f; V g_headRef{0,0,0};
 int g_veh = 0; float g_vehYawOff = 0.f;
+float g_lastCamYaw = 0.f; bool g_camYawSet = false;   // 0.4.9: view yaw of the last frame (body follow)
 float frameYaw(int ped, const VrState& s) {
     if (!g_yawRefSet && s.head.valid) {
         g_yawRef = headYawGta(s.head); g_headRef = xrPos(s.head);
@@ -107,6 +110,7 @@ V headCamera(int ped, const VrState& s, float yaw, bool inVehicle) {
     XrPoseF3 e = xr::removeRoll(s.stereo ? s.eye[s.renderEye] : s.head);
     V gf = xrToGta(qrot(e, {0,0,-1}), yaw);
     float camYaw = atan2f(-gf.x, gf.y) * 57.29578f;
+    g_lastCamYaw = camYaw; g_camYawSet = true;
     float pitch = asinf(fmaxf(-1.f, fminf(1.f, gf.z))) * 57.29578f;
     float roll = 0.f;
     xr::reportCameraPose(e);
@@ -192,6 +196,39 @@ void armFollow(int ped, const VrState& s, bool inVehicle, float yaw, V anchor) {
 // 0.4.7 user report: hands/pistol look right but bullets fly up - on Pico Neo 3 via SteamVR the aim pose is tilted
 // against the grip pose. Now: direction = grip -Y (the same axis hands.cpp uses for wrist -> knuckles = barrel),
 // origin = the right hand bone. GTA5VR.ini aim_source=grip|aim (aim = 0.4.7 behaviour), aim_pitch = degrees (+ up).
+// 0.4.9 crosshair: GTA's own reticle sits in the middle of the screen = where the HEAD looks, not where the pistol
+// points, and the scripted VR camera hides it anyway. The mod casts a ray along the barrel, finds what it hits and draws
+// a small cross there (GTA5VR.ini crosshair=1, crosshair_size in 1/1000 of the screen height, 0 = off).
+int g_xhair = -1, g_xhairSize = 6; ULONGLONG g_xhDbg = 0;
+void crosshair(int ped, V origin, V dir) {
+    if (g_xhair < 0) {
+        char m[MAX_PATH]; GetModuleFileNameA(nullptr, m, MAX_PATH); std::string d = m; d = d.substr(0, d.find_last_of("\\/") + 1) + "GTA5VR.ini";
+        if (GetPrivateProfileIntA("vr", "crosshair", -12345, d.c_str()) == -12345) WritePrivateProfileStringA("vr", "crosshair", "1", d.c_str());
+        if (GetPrivateProfileIntA("vr", "crosshair_size", -12345, d.c_str()) == -12345) WritePrivateProfileStringA("vr", "crosshair_size", "6", d.c_str());
+        g_xhair = GetPrivateProfileIntA("vr", "crosshair", 1, d.c_str()) != 0 ? 1 : 0;
+        g_xhairSize = std::max(2, std::min(40, (int)GetPrivateProfileIntA("vr", "crosshair_size", 6, d.c_str())));
+        vrlog::write("aim: GTA5VR.ini crosshair=%d crosshair_size=%d", g_xhair, g_xhairSize);
+    }
+    if (!g_xhair) return;
+    natives::invoke(N_HIDE_HUD_COMPONENT_THIS_FRAME, 14);   // GTA's centre reticle (would point where the head looks)
+    V start = add(origin, {dir.x*0.3f, dir.y*0.3f, dir.z*0.3f});
+    V end = add(origin, {dir.x*kAimRay, dir.y*kAimRay, dir.z*kAimRay});
+    int h = natives::invoke<int>(N_START_EXPENSIVE_SYNCHRONOUS_SHAPE_TEST_LOS_PROBE, start.x, start.y, start.z, end.x, end.y, end.z, 511, ped, 7);
+    int hit = 0, ent = 0; Vector3 hp{}, nrm{};
+    natives::invoke<int>(N_GET_SHAPE_TEST_RESULT, h, &hit, &hp, &nrm, &ent);
+    V p = end; if (hit) p = {hp.x, hp.y, hp.z};
+    float sx = 0, sy = 0;
+    if (!natives::invoke<int>(N_GET_SCREEN_COORD_FROM_WORLD_COORD, p.x, p.y, p.z, &sx, &sy)) return;
+    float ar = natives::invoke<float>(N_GET_ASPECT_RATIO, 0); if (ar < 0.5f || ar > 5.f) ar = 16.f / 9.f;
+    float hgt = g_xhairSize / 1000.f, th = hgt * 0.3f;   // arm length / thickness, screen-height units
+    int r = ent ? 255 : 255, g = ent ? 60 : 255, b = ent ? 60 : 255;   // red when it points at a person / car / object
+    natives::invoke(N_DRAW_RECT, sx, sy, (hgt * 2.f + th) / ar, th, 0, 0, 0, 160, 0);   // dark outline for bright scenes
+    natives::invoke(N_DRAW_RECT, sx, sy, th / ar, hgt * 2.f + th, 0, 0, 0, 160, 0);
+    natives::invoke(N_DRAW_RECT, sx, sy, (hgt * 2.f) / ar, th * 0.5f, r, g, b, 230, 0);
+    natives::invoke(N_DRAW_RECT, sx, sy, (th * 0.5f) / ar, hgt * 2.f, r, g, b, 230, 0);
+    ULONGLONG now = GetTickCount64();
+    if (now - g_xhDbg > 10000) { g_xhDbg = now; vrlog::write("aim: crosshair at screen (%.2f %.2f), %s %.1f m", sx, sy, hit ? "hit" : "no hit,", len(sub(p, origin))); }
+}
 int g_aimSrc = -1; float g_aimPitch = 0.f; int g_handBonePed = 0, g_rHandIdx = -1; ULONGLONG g_aimDbg = 0;
 float pitchOf(V d) { float l = len(d); return l > 1e-4f ? asinf(fmaxf(-1.f, fminf(1.f, d.z / l))) * 57.29578f : 0.f; }
 void weaponAim(int ped, const VrState& s, bool inVehicle, float yaw, V anchor) {
@@ -210,7 +247,8 @@ void weaponAim(int ped, const VrState& s, bool inVehicle, float yaw, V anchor) {
     const XrPoseF3& a = s.pose[IN_RIGHT_AIM_POSE];
     bool useAim = g_aimSrc == 1 || !g.valid;
     const XrPoseF3& p = useAim ? a : g;
-    if (!p.valid || s.value[IN_FIRE] < kTrigger) return;
+    if (!p.valid) return;
+    bool firing = s.value[IN_FIRE] >= kTrigger;
     // barrel axis in controller space, tilted by aim_pitch about controller X (+ = up for a pistol grip)
     float cp = cosf(g_aimPitch), sp = sinf(g_aimPitch);
     V local = useAim ? V{0.f, sp, -cp} : V{0.f, -cp, -sp};
@@ -224,6 +262,9 @@ void weaponAim(int ped, const VrState& s, bool inVehicle, float yaw, V anchor) {
         V hv{h.x, h.y, h.z}; if (len(sub(hv, anchor)) < 2.f) origin = hv;
     }
     V t = add(origin, {dir.x*kAimRay, dir.y*kAimRay, dir.z*kAimRay});
+    bool armed = natives::invoke<int>(N_IS_PED_ARMED, ped, 6) != 0;   // 6 = guns + throwables (not fists / melee)
+    if (armed) crosshair(ped, origin, dir);
+    if (!firing) return;
     natives::invoke(N_SET_PED_SHOOTS_AT_COORD, ped, t.x, t.y, t.z, 1);
     ULONGLONG now = GetTickCount64();
     if (now - g_aimDbg > 1000) {
@@ -235,12 +276,63 @@ void weaponAim(int ped, const VrState& s, bool inVehicle, float yaw, V anchor) {
     }
 }
 
-// right stick: snap turn 30 degrees
-bool g_turnLatch = false;
-void snapTurn(const VrState& s) {
+// right stick turning. 0.4.9: smooth turn by default (GTA5VR.ini turn_mode=smooth|snap, turn_speed deg/s, snap_angle).
+bool g_turnLatch = false; int g_turnMode = -1; float g_turnSpeed = 120.f, g_snapAngle = 30.f;
+int g_bodyFollow = 1; float g_bodyDead = 35.f, g_bodySpeed = 240.f; bool g_bodyTurning = false; ULONGLONG g_lastTick = 0;
+void readTurnIni() {
+    if (g_turnMode >= 0) return;
+    char m[MAX_PATH]; GetModuleFileNameA(nullptr, m, MAX_PATH); std::string d = m; d = d.substr(0, d.find_last_of("\\/") + 1) + "GTA5VR.ini";
+    auto def = [&](const char* k, const char* v) { if (GetPrivateProfileIntA("vr", k, -12345, d.c_str()) == -12345) WritePrivateProfileStringA("vr", k, v, d.c_str()); };
+    char buf[16] = {0};
+    GetPrivateProfileStringA("vr", "turn_mode", "", buf, sizeof buf, d.c_str());
+    if (!buf[0]) { WritePrivateProfileStringA("vr", "turn_mode", "smooth", d.c_str()); strcpy(buf, "smooth"); }
+    g_turnMode = (_stricmp(buf, "snap") == 0) ? 1 : 0;
+    def("turn_speed", "120"); def("snap_angle", "30"); def("body_follow", "1"); def("body_deadzone", "35"); def("body_speed", "240");
+    g_turnSpeed = (float)std::max(20, std::min(720, (int)GetPrivateProfileIntA("vr", "turn_speed", 120, d.c_str())));
+    g_snapAngle = (float)std::max(5, std::min(90, (int)GetPrivateProfileIntA("vr", "snap_angle", 30, d.c_str())));
+    g_bodyFollow = GetPrivateProfileIntA("vr", "body_follow", 1, d.c_str()) != 0;
+    g_bodyDead = (float)std::max(0, std::min(120, (int)GetPrivateProfileIntA("vr", "body_deadzone", 35, d.c_str())));
+    g_bodySpeed = (float)std::max(30, std::min(1080, (int)GetPrivateProfileIntA("vr", "body_speed", 240, d.c_str())));
+    vrlog::write("turn: GTA5VR.ini turn_mode=%s turn_speed=%.0f snap_angle=%.0f body_follow=%d body_deadzone=%.0f body_speed=%.0f",
+                 g_turnMode ? "snap" : "smooth", g_turnSpeed, g_snapAngle, g_bodyFollow, g_bodyDead, g_bodySpeed);
+}
+float frameDt() {
+    ULONGLONG now = GetTickCount64();
+    float dt = g_lastTick ? (now - g_lastTick) / 1000.f : 0.f; g_lastTick = now;
+    return fmaxf(0.f, fminf(0.1f, dt));   // pauses / hitches do not cause a big jump
+}
+void snapTurn(const VrState& s, float dt) {
+    readTurnIni();
     float x = s.value[IN_TURN_X];
-    if (!g_turnLatch && fabsf(x) > 0.7f) { float d = (x > 0 ? 30.f : -30.f); g_baseYaw -= d; g_vehYawOff -= d; g_turnLatch = true; }
+    if (g_turnMode == 0) {
+        if (fabsf(x) < 0.2f) return;
+        float k = (fabsf(x) - 0.2f) / 0.8f; k = k * k * (x > 0 ? 1.f : -1.f);   // soft start: small tilt = slow turn
+        float d = k * g_turnSpeed * dt;
+        g_baseYaw -= d; g_vehYawOff -= d;
+        return;
+    }
+    if (!g_turnLatch && fabsf(x) > 0.7f) { float d = (x > 0 ? g_snapAngle : -g_snapAngle); g_baseYaw -= d; g_vehYawOff -= d; g_turnLatch = true; }
     if (fabsf(x) < 0.3f) g_turnLatch = false;
+}
+float wrap180(float a) { while (a > 180.f) a -= 360.f; while (a < -180.f) a += 360.f; return a; }
+// 0.4.9: the character turns after the view on foot. Once the view is more than body_deadzone degrees away from where
+// the body faces, the body turns (body_speed deg/s) until it faces the view again. While walking GTA turns the body
+// itself (stick forward = where you look), so this only acts while standing / aiming.
+void bodyFollow(int ped, const VrState& s, bool inVehicle, float dt) {
+    if (!g_bodyFollow || inVehicle || !g_camYawSet) { g_bodyTurning = false; return; }
+    if (natives::invoke<int>(N_IS_PED_RAGDOLL, ped) || natives::invoke<int>(N_IS_PED_GETTING_INTO_A_VEHICLE, ped)) { g_bodyTurning = false; return; }
+    bool moving = fabsf(s.value[IN_MOVE_X]) > kDeadzone || fabsf(s.value[IN_MOVE_Y]) > kDeadzone;
+    if (moving) { g_bodyTurning = false; return; }
+    float pedH = natives::invoke<float>(N_GET_ENTITY_HEADING, ped);
+    float diff = wrap180(g_lastCamYaw - pedH);
+    bool aiming = s.value[IN_AIM] > kTrigger || s.value[IN_FIRE] > kTrigger;
+    float dead = aiming ? 10.f : g_bodyDead;    // aiming: keep the body almost square to the view
+    if (!g_bodyTurning && fabsf(diff) > dead) g_bodyTurning = true;
+    if (g_bodyTurning) {
+        float step = g_bodySpeed * dt;
+        if (fabsf(diff) <= step || fabsf(diff) < 3.f) { natives::invoke(N_SET_ENTITY_HEADING, ped, g_lastCamYaw); g_bodyTurning = false; }
+        else natives::invoke(N_SET_ENTITY_HEADING, ped, pedH + (diff > 0 ? step : -step));
+    }
 }
 
 // 0.4.6: B = get in / out of a vehicle as a TASK. 0.4.5 fed INPUT_ENTER through SET_CONTROL_VALUE_NEXT_FRAME, which
@@ -351,7 +443,9 @@ void hideHead(int ped) {
 }
 void showHead() { hands::setHideHead(false); restoreProps(); }
 
+bool g_radarChecked = false;
 void releaseCamera() {
+    g_radarChecked = false;
     showHead();
     g_neckPed = 0; g_camMode = 0;
     if (g_cam) { natives::invoke(N_DETACH_CAM, g_cam); natives::invoke(N_RENDER_SCRIPT_CAMS, 0, 0, 0, 1, 0, 0); natives::invoke(N_SET_CAM_ACTIVE, g_cam, 0); natives::invoke(N_DESTROY_CAM, g_cam, 0); g_cam = 0; }
@@ -373,11 +467,19 @@ void tick() {
     if (natives::invoke<int>(N_GET_IS_LOADING_SCREEN_ACTIVE) || natives::invoke<int>(N_IS_PAUSE_MENU_ACTIVE)) { releaseCamera(); return; }
     VrState s = xr::snapshot();
     if (!s.running) { releaseCamera(); return; }
+    if (g_lastTick && GetTickCount64() - g_lastTick > 500) g_lastTick = 0;
     int ped = natives::invoke<int>(N_PLAYER_PED_ID);
     bool inVehicle = natives::invoke<int>(N_IS_PED_IN_ANY_VEHICLE, ped, 0) != 0;
-    snapTurn(s);
+    float dt = frameDt();
+    snapTurn(s, dt);
     float yaw = frameYaw(ped, s);
     V anchor = headCamera(ped, s, yaw, inVehicle);
+    bodyFollow(ped, s, inVehicle, dt);
+    if (!g_radarChecked) {   // 0.4.9 minimap: make sure the radar is drawn (the helper copies it into the headset view)
+        g_radarChecked = true;
+        if (natives::invoke<int>(N_IS_RADAR_HIDDEN)) { natives::invoke(N_DISPLAY_RADAR, 1); vrlog::write("minimap: radar was hidden - switched on"); }
+        else vrlog::write("minimap: radar is on");
+    }
     armFollow(ped, s, inVehicle, yaw, anchor);
     { const XrPoseF3* g[2] = {&s.pose[IN_LEFT_GRIP_POSE], &s.pose[IN_RIGHT_GRIP_POSE]}; hands::tick(ped, g, yaw); }
     hideHead(ped);

@@ -56,6 +56,19 @@ void readIni() {
     defInt("cpu_size", "1800");   // 0.4.5: CPU transport image height (was fixed 1440 = blurry); 0 = full headset size
     g_cpuSize = (int)GetPrivateProfileIntA("vr", "cpu_size", 1800, ini.c_str()); if (g_cpuSize != 0) g_cpuSize = std::max(720, std::min(4096, g_cpuSize));
     vrlog::write("xr: GTA5VR.ini cpu_size=%d (picture sharpness on transport 3; lower it if fps drops)", g_cpuSize);
+    // 0.4.9 minimap: position / size in % of the eye image, source corner in % of a 16:9 frame
+    defInt("minimap", "1"); defInt("minimap_x", "20"); defInt("minimap_y", "66"); defInt("minimap_size", "22");
+    defInt("minimap_src_w", "19"); defInt("minimap_src_h", "25");
+    {
+        auto gi = [&](const char* k, int dv) { return (int)GetPrivateProfileIntA("vr", k, dv, ini.c_str()); };
+        bool on = gi("minimap", 1) != 0;
+        float sw = std::max(5, std::min(50, gi("minimap_src_w", 19))) / 100.f, sh = std::max(5, std::min(50, gi("minimap_src_h", 25))) / 100.f;
+        float size = std::max(5, std::min(60, gi("minimap_size", 22))) / 100.f;
+        float dx = std::max(0, std::min(95, gi("minimap_x", 20))) / 100.f, dy = std::max(0, std::min(95, gi("minimap_y", 66))) / 100.f;
+        float w = size * (sw * 16.f / 9.f) / sh;   // keep the radar's shape (eye image is square)
+        blit::setMinimap(on, 0.f, 1.f - sh, sw, 1.f, dx, dy, std::min(1.f, dx + w), std::min(1.f, dy + size));
+        vrlog::write("xr: GTA5VR.ini minimap=%d at %.0f%%/%.0f%% size %.0f%% (source %.0f%%x%.0f%% of the bottom-left corner)", on ? 1 : 0, dx * 100, dy * 100, size * 100, sw * 100, sh * 100);
+    }
     vrlog::write("xr: GTA5VR.ini runtime=%s stereo=%d latency=%d host_under_explorer=%d", g_runtime, g_stereo ? 1 : 0, g_latency, g_parentShell ? 1 : 0);
 }
 
