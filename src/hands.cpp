@@ -82,16 +82,51 @@ int g_neckIdx = -1;               // SKEL_Neck_1 index: collapse point for the h
 // into the bone = invisible); translation is not touched. The game rebuilds the matrices every frame, so when the
 // mod stops writing (VR off) the head is back the very next frame.
 std::vector<int> g_headBones; std::atomic<bool> g_hide{false};
-M3 g_cal[2]; bool g_calSet[2] = {false, false};
-float g_written[2][3][3]; bool g_haveWritten = false; int g_persistLog = 0;
+// 0.4.6 wrist rotation: absolute, no calibration. The hand's current frame is built from the skeleton itself
+// (wrist -> middle-finger knuckle = forward, pinky knuckle -> index knuckle = up), the wanted frame from the controller
+// grip pose (-Z = forward, +Y = up), and the difference is applied to the hand AND all its finger bones around the wrist.
+// 0.3.0-0.4.5 rotated only the hand matrix with a calibration taken at F12 -> fingers stayed behind, sleeves/arms stretched.
+int g_fing[2][20]; int g_fingN[2] = {0, 0}; int g_kIdx[2] = {-1, -1}, g_kMid[2] = {-1, -1}, g_kPinky[2] = {-1, -1};
+float g_last[2][9]; bool g_lastSet[2] = {false, false};
+std::atomic<unsigned> g_wApplied{0}; std::atomic<int> g_lastAngle[2] = {{0}, {0}};
+bool g_userOff = false; int g_rotIni = -1; int g_autoSearch = 0; float g_pitchOff = 0.f;
 // Background writer: the game recomputes the skeleton after scripts run (0.2.9 log: "overwritten by the game"), so a
 // write from the script thread is lost before rendering. A separate thread re-writes the target rotation continuously,
 // hitting the window between the animation update and the copy to the renderer. Translation is never touched.
 // Safety: it only writes while the script thread refreshed the target within the last 50 ms (stops in menus, on death,
 // on VR off, on any failed check), and only into the array the script thread validated this frame.
 std::atomic<uintptr_t> g_wArr{0}; std::atomic<ULONGLONG> g_wBeat{0}; std::mutex g_wMtx;
-float g_wTarget[2][3][3]; bool g_wHave[2] = {false, false}; std::atomic<unsigned> g_wCount{0};
+float g_wTarget[2][3][3]; bool g_wHave[2] = {false, false}; std::atomic<unsigned> g_wCount{0};   // wanted hand frame (fwd, up, right), array space
 HANDLE g_wThread = nullptr;
+typedef float F3[3];
+void nrm(float* v) { float l = sqrtf(v[0]*v[0] + v[1]*v[1] + v[2]*v[2]); if (l > 1e-6f) { v[0] /= l; v[1] /= l; v[2] /= l; } }
+// rotate hand + fingers so the hand frame matches tgt (columns fwd, up, right). Writer thread only.
+void applyHand(uintptr_t arr, int h, const float tgt[3][3]) {
+    float* H = (float*)(arr + (uintptr_t)g_handIdx[h] * 64);
+    if (g_lastSet[h]) { float d = 0; for (int c = 0; c < 3; ++c) for (int r = 0; r < 3; ++r) d += fabsf(H[c * 4 + r] - g_last[h][c * 3 + r]); if (d < 1e-4f) return; }   // still ours
+    if (g_kIdx[h] < 0 || g_kMid[h] < 0 || g_kPinky[h] < 0) return;
+    const float* w = H + 12; const float* km = (const float*)(arr + (uintptr_t)g_kMid[h] * 64 + 48);
+    const float* ki = (const float*)(arr + (uintptr_t)g_kIdx[h] * 64 + 48); const float* kp = (const float*)(arr + (uintptr_t)g_kPinky[h] * 64 + 48);
+    float f[3] = {km[0] - w[0], km[1] - w[1], km[2] - w[2]}; nrm(f);
+    float u[3] = {ki[0] - kp[0], ki[1] - kp[1], ki[2] - kp[2]};
+    float dp = u[0]*f[0] + u[1]*f[1] + u[2]*f[2]; for (int i = 0; i < 3; ++i) u[i] -= dp * f[i]; nrm(u);
+    float r[3] = {f[1]*u[2] - f[2]*u[1], f[2]*u[0] - f[0]*u[2], f[0]*u[1] - f[1]*u[0]};
+    if (!(fabsf(r[0]) + fabsf(r[1]) + fabsf(r[2]) > 0.5f)) return;
+    M3 Fb{}; for (int i = 0; i < 3; ++i) { Fb.m[i][0] = f[i]; Fb.m[i][1] = u[i]; Fb.m[i][2] = r[i]; }
+    M3 Fc{}; for (int i = 0; i < 3; ++i) for (int j = 0; j < 3; ++j) Fc.m[i][j] = tgt[j][i];
+    M3 D = mul(Fc, tr(Fb));
+    float tr3 = D.m[0][0] + D.m[1][1] + D.m[2][2]; g_lastAngle[h] = (int)(acosf(fmaxf(-1.f, fminf(1.f, (tr3 - 1.f) * 0.5f))) * 57.3f);
+    float wp[3] = {w[0], w[1], w[2]};
+    auto rotBone = [&](int idx, bool movePos) {
+        float* B = (float*)(arr + (uintptr_t)idx * 64);
+        for (int c = 0; c < 3; ++c) { float v[3] = {B[c*4], B[c*4+1], B[c*4+2]}; for (int i = 0; i < 3; ++i) B[c*4+i] = D.m[i][0]*v[0] + D.m[i][1]*v[1] + D.m[i][2]*v[2]; }
+        if (movePos) { float p[3] = {B[12] - wp[0], B[13] - wp[1], B[14] - wp[2]}; for (int i = 0; i < 3; ++i) B[12+i] = wp[i] + D.m[i][0]*p[0] + D.m[i][1]*p[1] + D.m[i][2]*p[2]; }
+    };
+    for (int k = 0; k < g_fingN[h]; ++k) rotBone(g_fing[h][k], true);
+    rotBone(g_handIdx[h], false);
+    for (int c = 0; c < 3; ++c) for (int rr = 0; rr < 3; ++rr) g_last[h][c * 3 + rr] = H[c * 4 + rr];
+    g_lastSet[h] = true; g_wApplied.fetch_add(1);
+}
 DWORD WINAPI writer(LPVOID) {
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);   // 0.4.3: was ABOVE_NORMAL + hot spin, starved the frame copy
     for (;;) {
@@ -113,10 +148,7 @@ DWORD WINAPI writer(LPVOID) {
                 if (haveNeck && i != hd) { f[12] = np[0]; f[13] = np[1]; f[14] = np[2]; }
             }
         }
-        for (int h = 0; h < 2; ++h) if (have[h]) {
-            float* f = (float*)(arr + (uintptr_t)g_handIdx[h] * 64);
-            for (int c = 0; c < 3; ++c) for (int r = 0; r < 3; ++r) f[c * 4 + r] = t[h][c][r];
-        }
+        for (int h = 0; h < 2; ++h) if (have[h]) applyHand(arr, h, t[h]);
         g_wCount.fetch_add(1);
         for (int i = 0; i < 200; ++i) YieldProcessor();
         if ((g_wCount.load() & 63) == 0) Sleep(0);   // 0.4.3: give the core back regularly
@@ -210,6 +242,20 @@ void search(int ped, uintptr_t pedAddr) {
             if (!nearHand && dx*dx + dy*dy + dz*dz < 0.30f*0.30f && dz > -0.07f) hb.push_back(i);   // 0.4.5: was 0.25 m / -0.04 (hair, neck top stayed)
         }
         { std::lock_guard<std::mutex> l(g_wMtx); g_headBones = hb; }
+        // fingers (+ weapon grip point PH_*_Hand) of each hand; knuckles 10 = index, 20 = middle, 40 = pinky
+        static const int fl[2][16] = {
+            {26610,4089,4090, 26611,4169,4170, 26612,4185,4186, 26613,4137,4138, 26614,4153,4154, 60309},
+            {58866,64016,64017, 58867,64096,64097, 58868,64112,64113, 58869,64064,64065, 58870,64080,64081, 28422}};
+        for (int h = 0; h < 2; ++h) {
+            g_fingN[h] = 0;
+            for (int k = 0; k < 16; ++k) {
+                int bi = natives::invoke<int>(N_GET_PED_BONE_INDEX, ped, fl[h][k]);
+                if (bi < 0 || bi >= count || bi == g_handIdx[h]) continue;
+                g_fing[h][g_fingN[h]++] = bi;
+                if (k == 3) g_kIdx[h] = bi; if (k == 6) g_kMid[h] = bi; if (k == 12) g_kPinky[h] = bi;
+            }
+            vrlog::write("hands: %s hand %d finger bones, knuckles index %d middle %d pinky %d", h ? "right" : "left", g_fingN[h], g_kIdx[h], g_kMid[h], g_kPinky[h]);
+        }
         vrlog::write("hands: %d head/face bones of %d will be hidden in VR (collapsed into neck bone index %d)", (int)hb.size(), count, g_neckIdx);
         char path[96]; snprintf(path, sizeof(path), "ped+0x%X", g_offs[0]);
         for (int d = 1; d < g_depth; ++d) { size_t l = strlen(path); snprintf(path + l, sizeof(path) - l, " ->+0x%X", g_offs[d]); }
@@ -232,15 +278,26 @@ void setHideHead(bool on) {
 }
 void toggle() {
     if (!g_found) { g_searched = false; g_wantSearch = true; vrlog::write("F12: searching the skeleton (VR must be on, stand still)..."); return; }
-    g_on = !g_on; g_calSet[0] = g_calSet[1] = false; g_haveWritten = false; g_persistLog = 0;
+    g_on = !g_on; g_userOff = !g_on; g_lastSet[0] = g_lastSet[1] = false;
     g_wArr = 0; { std::lock_guard<std::mutex> l(g_wMtx); g_wHave[0] = g_wHave[1] = false; }
     if (!g_on && !g_hide.load()) g_wArr = 0;
     if (g_on && !g_wThread) g_wThread = CreateThread(nullptr, 0, writer, nullptr, 0, nullptr);
-    vrlog::write("F12: hand rotation %s (hold the controllers the way the hands are held now)", g_on ? "ON" : "off");
+    vrlog::write("F12: hand rotation %s", g_on ? "ON" : "off");
 }
 
 void tick(int ped, const XrPoseF3* gripLeftRight[2], float yawDeg) {
     uintptr_t pedAddr = (uintptr_t)shv::entityAddress(ped);
+    if (g_rotIni < 0) {
+        char m[MAX_PATH]; GetModuleFileNameA(nullptr, m, MAX_PATH); std::string d = m; d = d.substr(0, d.find_last_of("\\/") + 1) + "GTA5VR.ini";
+        if (GetPrivateProfileIntA("vr", "hand_rotation", -12345, d.c_str()) == -12345) WritePrivateProfileStringA("vr", "hand_rotation", "1", d.c_str());
+        if (GetPrivateProfileIntA("vr", "hand_pitch", -12345, d.c_str()) == -12345) WritePrivateProfileStringA("vr", "hand_pitch", "0", d.c_str());
+        g_rotIni = GetPrivateProfileIntA("vr", "hand_rotation", 1, d.c_str()) ? 1 : 0;
+        g_pitchOff = (int)GetPrivateProfileIntA("vr", "hand_pitch", 0, d.c_str()) * 0.0174533f;
+        vrlog::write("hands: GTA5VR.ini hand_rotation=%d hand_pitch=%.0f", g_rotIni, g_pitchOff * 57.3f);
+    }
+    if (g_rotIni == 1 && !g_userOff && !g_searched && !g_wantSearch && g_autoSearch < 3) { ++g_autoSearch; g_wantSearch = true; vrlog::write("hands: searching the skeleton for hand rotation (game may pause ~1 s)"); }
+    if (g_rotIni == 1 && !g_userOff && g_found && !g_on) { g_on = true; g_lastSet[0] = g_lastSet[1] = false; vrlog::write("hands: hand rotation ON (F12 = off)"); }
+    if (g_on && !g_wThread) g_wThread = CreateThread(nullptr, 0, writer, nullptr, 0, nullptr);
     if (!g_searched) {
         if (!g_wantSearch) return;
         g_wantSearch = false;
@@ -266,35 +323,31 @@ void tick(int ped, const XrPoseF3* gripLeftRight[2], float yawDeg) {
     }
     if (!g_on) { g_wArr = arr; g_wBeat = GetTickCount64(); return; }   // head hiding only
     static ULONGLONG lastRate = 0;
-    if (GetTickCount64() - lastRate > 5000) { lastRate = GetTickCount64(); vrlog::write("hands: background writes in the last 5 s: %u", g_wCount.exchange(0)); }
+    if (GetTickCount64() - lastRate > 5000) { lastRate = GetTickCount64(); vrlog::write("hands: rotation applied %u times in 5 s (writer passes %u), angle to controller L %d R %d deg", g_wApplied.exchange(0), g_wCount.exchange(0), g_lastAngle[0].load(), g_lastAngle[1].load()); }
+    int maxIdx = 0; for (int h = 0; h < 2; ++h) { maxIdx = maxIdx > g_handIdx[h] ? maxIdx : g_handIdx[h]; for (int k = 0; k < g_fingN[h]; ++k) maxIdx = maxIdx > g_fing[h][k] ? maxIdx : g_fing[h][k]; }
+    if (!readable(arr, (size_t)(maxIdx + 1) * 64) || !writable(arr + (uintptr_t)g_handIdx[0] * 64, 48) || !writable(arr + (uintptr_t)maxIdx * 64, 64)) { g_wArr = 0; vrlog::write("hands: matrices not writable - rotation off"); g_on = false; g_userOff = true; return; }
+    M3 Et = tr(E);
     for (int h = 0; h < 2; ++h) {
-        uintptr_t m = arr + (uintptr_t)g_handIdx[h] * 64;
-        if (!readable(m, 64) || !writable(m, 48)) { g_wArr = 0; vrlog::write("hands: matrix not writable - rotation off"); g_on = false; return; }
-        // sanity: the bone translation must still be where the game puts the hand
-        Vector3 w = natives::invokeV3(N_GET_WORLD_POSITION_OF_ENTITY_BONE, ped, g_handIdx[h]);
-        float* f = (float*)m;
-        float want[3] = {w.x, w.y, w.z};
-        if (!g_worldSpace) { float d[3] = {w.x - epos[0], w.y - epos[1], w.z - epos[2]}; for (int i = 0; i < 3; ++i) want[i] = E.m[0][i]*d[0] + E.m[1][i]*d[1] + E.m[2][i]*d[2]; }
-        for (int i = 0; i < 3; ++i) if (!(fabsf(f[12 + i] - want[i]) < 0.1f)) { g_wArr = 0; vrlog::write("hands: bone check failed (%.2f vs %.2f) - rotation off", f[12 + i], want[i]); g_on = false; return; }
-        // did last frame's write survive until now? (tells whether the game overwrites it before rendering)
-        if (g_haveWritten && g_persistLog < 4) {
-            float diff = 0; for (int c = 0; c < 3; ++c) for (int r = 0; r < 3; ++r) diff += fabsf(f[c * 4 + r] - g_written[h][c][r]);
-            vrlog::write("hands: %s hand matrix since last write: %s (diff %.3f)", h ? "right" : "left", diff < 0.01f ? "kept" : "overwritten by the game", diff);
-            if (h == 1) ++g_persistLog;
-        }
         const XrPoseF3* p = gripLeftRight[h];
-        if (!p || !p->valid) continue;
-        M3 bone{};   // current bone basis (columns) in world space
-        for (int c = 0; c < 3; ++c) for (int r = 0; r < 3; ++r) bone.m[r][c] = f[c * 4 + r];
-        if (!g_worldSpace) bone = mul(E, bone);
-        M3 ctrl = mul(xrToGtaRot(yawDeg), fromQuat(p->qx, p->qy, p->qz, p->qw));
-        if (!g_calSet[h]) { g_cal[h] = mul(tr(ctrl), bone); g_calSet[h] = true; vrlog::write("hands: %s hand calibrated", h ? "right" : "left"); }
-        M3 target = mul(ctrl, g_cal[h]);
-        if (!g_worldSpace) target = mul(tr(E), target);
-        for (int c = 0; c < 3; ++c) for (int r = 0; r < 3; ++r) { f[c * 4 + r] = target.m[r][c]; g_written[h][c][r] = target.m[r][c]; }
-        { std::lock_guard<std::mutex> l(g_wMtx); memcpy(g_wTarget[h], g_written[h], sizeof(g_written[h])); g_wHave[h] = true; }
+        if (!p || !p->valid) { std::lock_guard<std::mutex> l(g_wMtx); g_wHave[h] = false; continue; }
+        // controller axes (OpenXR grip: -Z forward, +Y up), optional pitch offset about the controller X axis
+        float cp = cosf(g_pitchOff), sp = sinf(g_pitchOff);
+        M3 R = mul(fromQuat(p->qx, p->qy, p->qz, p->qw), M3{{{1,0,0},{0,cp,-sp},{0,sp,cp}}});
+        // A fist closed around the controller handle: the knuckle row (pinky -> index) runs along the handle = grip -Z,
+        // wrist -> middle knuckle is across it = grip +Y. (0.3.x-0.4.5 effectively matched hand forward to -Z: wrists bent.)
+        float fx[3] = {R.m[0][1], R.m[1][1], R.m[2][1]}, ux[3] = {-R.m[0][2], -R.m[1][2], -R.m[2][2]};
+        M3 Mw = xrToGtaRot(yawDeg);
+        float fw[3], uw[3];
+        for (int i = 0; i < 3; ++i) { fw[i] = Mw.m[i][0]*fx[0] + Mw.m[i][1]*fx[1] + Mw.m[i][2]*fx[2]; uw[i] = Mw.m[i][0]*ux[0] + Mw.m[i][1]*ux[1] + Mw.m[i][2]*ux[2]; }
+        float fo[3], uo[3];
+        if (g_worldSpace) { for (int i = 0; i < 3; ++i) { fo[i] = fw[i]; uo[i] = uw[i]; } }
+        else for (int i = 0; i < 3; ++i) { fo[i] = Et.m[i][0]*fw[0] + Et.m[i][1]*fw[1] + Et.m[i][2]*fw[2]; uo[i] = Et.m[i][0]*uw[0] + Et.m[i][1]*uw[1] + Et.m[i][2]*uw[2]; }
+        nrm(fo); float d = uo[0]*fo[0] + uo[1]*fo[1] + uo[2]*fo[2]; for (int i = 0; i < 3; ++i) uo[i] -= d * fo[i]; nrm(uo);
+        float ro[3] = {fo[1]*uo[2] - fo[2]*uo[1], fo[2]*uo[0] - fo[0]*uo[2], fo[0]*uo[1] - fo[1]*uo[0]};
+        std::lock_guard<std::mutex> l(g_wMtx);
+        for (int i = 0; i < 3; ++i) { g_wTarget[h][0][i] = fo[i]; g_wTarget[h][1][i] = uo[i]; g_wTarget[h][2][i] = ro[i]; }
+        g_wHave[h] = true;
     }
-    g_haveWritten = true;
     g_wArr = arr; g_wBeat = GetTickCount64();
 }
 

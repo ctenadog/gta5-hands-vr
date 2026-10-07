@@ -11,9 +11,11 @@
   {"action": "move_x", "xr_type": "float", "path_pico4": "/user/hand/left/input/thumbstick/x", "path_touch": "/user/hand/left/input/thumbstick/x", "game_control": "INPUT_MOVE_LR", "game_control_vehicle": "INPUT_VEH_MOVE_LR", "axis": "x", "verified": false},
   {"action": "move_y", "xr_type": "float", "path_pico4": "/user/hand/left/input/thumbstick/y", "path_touch": "/user/hand/left/input/thumbstick/y", "game_control": "INPUT_MOVE_UD", "game_control_vehicle": "-", "axis": "-y", "verified": false},
   {"action": "jump", "xr_type": "bool", "path_pico4": "/user/hand/right/input/a/click", "path_touch": "/user/hand/right/input/a/click", "game_control": "INPUT_JUMP", "game_control_vehicle": "-", "axis": "-", "verified": false},
-  {"action": "enter_vehicle", "xr_type": "bool", "path_pico4": "/user/hand/right/input/b/click", "path_touch": "/user/hand/right/input/b/click", "game_control": "INPUT_ENTER", "game_control_vehicle": "INPUT_ENTER", "axis": "-", "verified": false},
+  {"action": "enter_vehicle", "xr_type": "bool", "path_pico4": "/user/hand/right/input/b/click", "path_touch": "/user/hand/right/input/b/click", "game_control": "-", "game_control_vehicle": "-", "axis": "-", "verified": false, "note": "handled in game.cpp (TASK_ENTER/LEAVE_VEHICLE) since 0.4.6"},
   {"action": "reload", "xr_type": "bool", "path_pico4": "/user/hand/left/input/x/click", "path_touch": "/user/hand/left/input/x/click", "game_control": "INPUT_RELOAD", "game_control_vehicle": "-", "axis": "-", "verified": false},
   {"action": "sprint", "xr_type": "bool", "path_pico4": "/user/hand/left/input/thumbstick/click", "path_touch": "/user/hand/left/input/thumbstick/click", "game_control": "INPUT_SPRINT", "game_control_vehicle": "-", "axis": "-", "verified": false},
-  {"action": "turn_x", "xr_type": "float", "path_pico4": "/user/hand/right/input/thumbstick/x", "path_touch": "/user/hand/right/input/thumbstick/x", "game_control": "-", "game_control_vehicle": "-", "axis": "x", "verified": false}
+  {"action": "turn_x", "xr_type": "float", "path_pico4": "/user/hand/right/input/thumbstick/x", "path_touch": "/user/hand/right/input/thumbstick/x", "game_control": "-", "game_control_vehicle": "-", "axis": "x", "verified": false},
+  {"action": "next_weapon", "xr_type": "bool", "path_pico4": "/user/hand/left/input/y/click", "path_touch": "/user/hand/left/input/y/click", "game_control": "-", "game_control_vehicle": "-", "axis": "-", "verified": false},
+  {"action": "holster", "xr_type": "bool", "path_pico4": "/user/hand/right/input/thumbstick/click", "path_touch": "/user/hand/right/input/thumbstick/click", "game_control": "-", "game_control_vehicle": "-", "axis": "-", "verified": false}
  ]
 }

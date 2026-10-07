@@ -49,7 +49,7 @@ bool keyHit(int vk) {
 }
 
 void scriptMain() {
-    vrlog::write("script thread started (SHV game version id %d); F8 toggles VR, F9 recenters, F10 test pattern, F11 arms on/off, F12 hand rotation (experimental)", shv::gameVersion());
+    vrlog::write("script thread started (SHV game version id %d); F8 toggles VR, F9 recenters, F10 test pattern, F11 arms on/off, F12 hand rotation on/off", shv::gameVersion());
     ULONGLONG onAt = 0;
     for (;;) {
         if (keyHit(kToggleVk)) {
@@ -68,7 +68,7 @@ void scriptMain() {
 }
 
 DWORD WINAPI boot(LPVOID) {
-    vrlog::write("GTA5VR 0.4.5 loading (Script Hook V build, story mode only)");
+    vrlog::write("GTA5VR 0.4.6 loading (Script Hook V build, story mode only)");
     // SHV may be loaded after us by the ASI loader: retry for ~30 s.
     bool ok = false;
     for (int i = 0; i < 60 && !(ok = natives::init()); ++i) Sleep(500);

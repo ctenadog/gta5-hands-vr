@@ -155,14 +155,31 @@ V headCamera(int ped, const VrState& s, float yaw, bool inVehicle) {
 
 // systems.arm_follow: one IK target per row of sheets/arms.json, in the same world-locked frame as the camera
 bool g_armsOn = true;
+// 0.4.6: GTA5VR.ini arm_scale (% of the real controller distance, default 120) and arm_forward (cm pushed forward
+// along the view, default 12): 0.4.5 put the hands exactly where the controllers are relative to the eyes, which with
+// GTA's bigger body looked glued to the chest. Reach limit 0.95 m (was 0.7).
+float g_armScale = 1.2f, g_armFwd = 0.12f; bool g_armIni = false;
+void readArmIni() {
+    if (g_armIni) return; g_armIni = true;
+    char m[MAX_PATH]; GetModuleFileNameA(nullptr, m, MAX_PATH); std::string d = m; d = d.substr(0, d.find_last_of("\\/") + 1) + "GTA5VR.ini";
+    auto def = [&](const char* k, const char* v) { if (GetPrivateProfileIntA("vr", k, -12345, d.c_str()) == -12345) WritePrivateProfileStringA("vr", k, v, d.c_str()); };
+    def("arm_scale", "120"); def("arm_forward", "12");
+    g_armScale = fmaxf(0.5f, fminf(2.f, (int)GetPrivateProfileIntA("vr", "arm_scale", 120, d.c_str()) / 100.f));
+    g_armFwd = fmaxf(-0.3f, fminf(0.5f, (int)GetPrivateProfileIntA("vr", "arm_forward", 12, d.c_str()) / 100.f));
+    vrlog::write("arms: GTA5VR.ini arm_scale=%.0f%% arm_forward=%.0f cm", g_armScale * 100, g_armFwd * 100);
+}
 void armFollow(int ped, const VrState& s, bool inVehicle, float yaw, V anchor) {
     if (!g_armsOn) return;
+    readArmIni();
     natives::invoke(N_SET_PED_CAN_ARM_IK, ped, 1);
+    V hf = xrToGta(qrot(xr::removeRoll(s.head), {0,0,-1}), yaw); hf.z = 0.f;
+    { float l = len(hf); if (l > 0.01f) { hf.x /= l; hf.y /= l; } }
     for (const ArmRow& a : kArms) {
         if (inVehicle && !a.inVehicle) continue;
         const XrPoseF3& p = s.pose[a.pose];
         if (!p.valid) continue;
         V rel = xrToGta(sub(xrPos(p), xrPos(s.head)), yaw);
+        rel = {rel.x * g_armScale + hf.x * g_armFwd, rel.y * g_armScale + hf.y * g_armFwd, rel.z * g_armScale};
         if (len(rel) > a.maxReach) { float k = a.maxReach / len(rel); rel = {rel.x*k, rel.y*k, rel.z*k}; }
         V target = add(anchor, rel);
         natives::invoke(N_SET_IK_TARGET, ped, a.ikIndex, 0, 0, target.x, target.y, target.z, 0, a.blendIn, a.blendOut);
@@ -188,6 +205,57 @@ void snapTurn(const VrState& s) {
     float x = s.value[IN_TURN_X];
     if (!g_turnLatch && fabsf(x) > 0.7f) { float d = (x > 0 ? 30.f : -30.f); g_baseYaw -= d; g_vehYawOff -= d; g_turnLatch = true; }
     if (fabsf(x) < 0.3f) g_turnLatch = false;
+}
+
+// 0.4.6: B = get in / out of a vehicle as a TASK. 0.4.5 fed INPUT_ENTER through SET_CONTROL_VALUE_NEXT_FRAME, which
+// the game does not treat as a fresh press -> "can't get out of the car". Y = next weapon you own, right stick click =
+// holster (fists). There was no weapon selection at all before (the weapon wheel needs the gamepad/mouse).
+uint32_t joaat(const char* k) { uint32_t h = 0; for (; *k; ++k) { char c = *k; if (c >= 'A' && c <= 'Z') c += 32; h += (uint8_t)c; h += h << 10; h ^= h >> 6; } h += h << 3; h ^= h >> 11; h += h << 15; return h; }
+const char* kWeapons[] = {"WEAPON_UNARMED","WEAPON_KNIFE","WEAPON_NIGHTSTICK","WEAPON_HAMMER","WEAPON_BAT","WEAPON_CROWBAR","WEAPON_GOLFCLUB",
+  "WEAPON_PISTOL","WEAPON_COMBATPISTOL","WEAPON_APPISTOL","WEAPON_PISTOL50","WEAPON_SNSPISTOL","WEAPON_HEAVYPISTOL","WEAPON_VINTAGEPISTOL","WEAPON_STUNGUN",
+  "WEAPON_MICROSMG","WEAPON_SMG","WEAPON_ASSAULTSMG","WEAPON_COMBATPDW","WEAPON_MG","WEAPON_COMBATMG","WEAPON_GUSENBERG",
+  "WEAPON_ASSAULTRIFLE","WEAPON_CARBINERIFLE","WEAPON_ADVANCEDRIFLE","WEAPON_SPECIALCARBINE","WEAPON_BULLPUPRIFLE",
+  "WEAPON_PUMPSHOTGUN","WEAPON_SAWNOFFSHOTGUN","WEAPON_ASSAULTSHOTGUN","WEAPON_BULLPUPSHOTGUN","WEAPON_HEAVYSHOTGUN",
+  "WEAPON_SNIPERRIFLE","WEAPON_HEAVYSNIPER","WEAPON_MARKSMANRIFLE","WEAPON_GRENADELAUNCHER","WEAPON_RPG","WEAPON_MINIGUN",
+  "WEAPON_GRENADE","WEAPON_STICKYBOMB","WEAPON_MOLOTOV","WEAPON_SMOKEGRENADE"};
+const int kWeaponCount = sizeof(kWeapons) / sizeof(kWeapons[0]);
+bool g_prevBtn[IN_COUNT] = {};
+bool pressed(const VrState& s, int i) { bool now = s.value[i] > 0.5f; bool hit = now && !g_prevBtn[i]; return hit; }
+void nextWeapon(int ped) {
+    uint32_t cur = natives::invoke<uint32_t>(N_GET_SELECTED_PED_WEAPON, ped);
+    int ci = 0; for (int i = 0; i < kWeaponCount; ++i) if (joaat(kWeapons[i]) == cur) ci = i;
+    for (int k = 1; k <= kWeaponCount; ++k) {
+        int i = (ci + k) % kWeaponCount; uint32_t h = joaat(kWeapons[i]);
+        if (i == 0 || natives::invoke<int>(N_HAS_PED_GOT_WEAPON, ped, h, 0)) { natives::invoke(N_SET_CURRENT_PED_WEAPON, ped, h, 1); vrlog::write("weapon: %s", kWeapons[i]); return; }
+    }
+}
+void specialButtons(int ped, const VrState& s, bool inVehicle) {
+    if (pressed(s, IN_ENTER_VEHICLE)) {
+        if (inVehicle) {
+            int veh = natives::invoke<int>(N_GET_VEHICLE_PED_IS_IN, ped, 0);
+            natives::invoke(N_TASK_LEAVE_VEHICLE, ped, veh, 0);
+            vrlog::write("B: leave vehicle %d", veh);
+        } else {
+            Vector3 p = natives::invokeV3(N_GET_ENTITY_COORDS, ped, 1);
+            int veh = natives::invoke<int>(N_GET_CLOSEST_VEHICLE, p.x, p.y, p.z, 7.f, 0, 70);
+            if (!veh) veh = natives::invoke<int>(N_GET_CLOSEST_VEHICLE, p.x, p.y, p.z, 7.f, 0, 127);
+            if (veh) { natives::invoke(N_TASK_ENTER_VEHICLE, ped, veh, 10000, -1, 2.f, 1, (const char*)nullptr); vrlog::write("B: enter vehicle %d", veh); }
+            else vrlog::write("B: no vehicle within 7 m");
+        }
+    }
+    if (pressed(s, IN_NEXT_WEAPON)) nextWeapon(ped);
+    if (pressed(s, IN_HOLSTER)) { natives::invoke(N_SET_CURRENT_PED_WEAPON, ped, joaat("WEAPON_UNARMED"), 1); vrlog::write("weapon: holstered"); }
+}
+// 0.4.6 diagnostics: every button / trigger change is logged (first 300), so a log shows which controller buttons
+// actually reach the mod on Pico Neo 3 through PICO Connect + SteamVR.
+int g_inLog = 0;
+void logInputs(const VrState& s) {
+    for (int i = 0; i < IN_COUNT; ++i) {
+        if (kInputs[i].type == XrType::Pose) continue;
+        bool now = (i == IN_MOVE_X || i == IN_MOVE_Y || i == IN_TURN_X) ? fabsf(s.value[i]) > 0.5f : s.value[i] > 0.5f;
+        if (now != g_prevBtn[i] && g_inLog < 300) { ++g_inLog; vrlog::write("input: %s %s (%.2f)", kInputs[i].action, now ? "DOWN" : "up", s.value[i]); }
+        g_prevBtn[i] = now;
+    }
 }
 
 // systems.controller_input: every non-pose row of sheets/inputs.json feeds its GTA control
@@ -278,6 +346,8 @@ void tick() {
     { const XrPoseF3* g[2] = {&s.pose[IN_LEFT_GRIP_POSE], &s.pose[IN_RIGHT_GRIP_POSE]}; hands::tick(ped, g, yaw); }
     hideHead(ped);
     weaponAim(ped, s, inVehicle, yaw, anchor);
+    specialButtons(ped, s, inVehicle);
     controllerInput(s, inVehicle);
+    logInputs(s);   // must run last: updates the previous-button state used by pressed()
 }
 }
