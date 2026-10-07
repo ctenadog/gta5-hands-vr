@@ -439,6 +439,39 @@ void logInputs(const VrState& s) {
     }
 }
 
+// 0.6.6: virtual steering wheel. In a vehicle, holding both controllers in front of you like a wheel and turning them
+// steers the car: the tilt of the left->right hand line (in the room, no matter where you look) is the wheel angle.
+// Right hand lower = turn right. wheel_angle (deg, default 90) = full lock, 4 deg deadzone, the stick still overrides.
+// Only active while the hands are 20-90 cm apart and in front of the head (resting hands on the lap -> no input).
+// GTA5VR.ini [vr] wheel=0 turns it off.
+int g_wheelIni = -1; float g_wheelMax = 90.f; ULONGLONG g_wheelDbg = 0; bool g_wheelOn = false;
+float wheelSteer(const VrState& s) {
+    if (g_wheelIni < 0) {
+        char m[MAX_PATH]; GetModuleFileNameA(nullptr, m, MAX_PATH); std::string d = m; d = d.substr(0, d.find_last_of("\\/") + 1) + "GTA5VR.ini";
+        g_wheelIni = GetPrivateProfileIntA("vr", "wheel", 1, d.c_str()) != 0 ? 1 : 0;
+        g_wheelMax = (float)std::max(30, std::min(180, (int)GetPrivateProfileIntA("vr", "wheel_angle", 90, d.c_str())));
+        vrlog::write("wheel: GTA5VR.ini wheel=%d wheel_angle=%.0f", g_wheelIni, g_wheelMax);
+    }
+    if (!g_wheelIni) return 0.f;
+    const XrPoseF3& L = s.pose[IN_LEFT_GRIP_POSE]; const XrPoseF3& R = s.pose[IN_RIGHT_GRIP_POSE];
+    if (!L.valid || !R.valid || !s.head.valid) return 0.f;
+    V d = sub(xrPos(R), xrPos(L));                          // OpenXR: X right, Y up, -Z forward
+    float horiz = sqrtf(d.x*d.x + d.z*d.z), dist = len(d);
+    V mid = {(L.px + R.px) * 0.5f, (L.py + R.py) * 0.5f, (L.pz + R.pz) * 0.5f};
+    V hf = qrot(s.head, {0, 0, -1}); hf.y = 0.f; { float l = len(hf); if (l > 1e-3f) { hf.x /= l; hf.z /= l; } }
+    V toMid = sub(mid, xrPos(s.head));
+    float ahead = toMid.x * hf.x + toMid.z * hf.z;       // how far in front of the head the hands are
+    bool active = dist > 0.20f && dist < 0.90f && ahead > 0.12f && horiz > 0.05f;
+    if (active != g_wheelOn) { g_wheelOn = active; vrlog::write("wheel: %s (hands %.2f m apart, %.2f m in front)", active ? "hands on the wheel" : "hands off the wheel", dist, ahead); }
+    if (!active) return 0.f;
+    float ang = atan2f(-d.y, horiz) * 57.29578f;          // right hand lower -> positive -> turn right
+    float a = fabsf(ang) < 4.f ? 0.f : (ang > 0 ? ang - 4.f : ang + 4.f);
+    float v = fmaxf(-1.f, fminf(1.f, a / (g_wheelMax - 4.f)));
+    ULONGLONG now = GetTickCount64();
+    if (fabsf(v) > 0.05f && now - g_wheelDbg > 2000) { g_wheelDbg = now; vrlog::write("wheel: angle %.0f deg -> steer %.2f", ang, v); }
+    return v;
+}
+
 // systems.controller_input: every non-pose row of sheets/inputs.json feeds its GTA control
 bool g_phoneOut = false;
 void controllerInput(const VrState& s, bool inVehicle) {
@@ -453,6 +486,11 @@ void controllerInput(const VrState& s, bool inVehicle) {
         // nothing is sent while a stick is centred / a trigger is released.
         // Axes take -1..1 (MOVE_UD: -1 = forward, MOVE_LR: +1 = right). 0.4.x sent 0..1 with 0.5 as centre,
         // which pushed the character backwards/right all the time ("crooked" controls).
+        if (i == IN_MOVE_X && inVehicle && fabsf(v) < kDeadzone) {   // 0.6.6: stick idle -> virtual wheel steers
+            float w = wheelSteer(s);
+            if (w != 0.f) natives::invoke<int>(N_SET_CONTROL_VALUE_NEXT_FRAME, 0, ctl, w);
+            continue;
+        }
         if (i == IN_MOVE_X || i == IN_MOVE_Y) { if (fabsf(v) < kDeadzone) continue; v = v * r.axisSign; }
         else if (r.type == XrType::Float) { if (v < kTrigger) continue; }
         else if (v < 0.5f) continue;

@@ -3,7 +3,7 @@
 # Downloads the official Khronos OpenXR loader (Apache-2.0) instead of keeping binaries in git.
 set -e
 cd "$(dirname "$0")/.."
-VER=0.6.5
+VER=0.6.6
 OXR=1.1.63
 mkdir -p build
 if [ ! -f build/oxr/include/openxr/openxr.h ]; then
