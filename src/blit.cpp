@@ -19,6 +19,8 @@ bool g_ok = false;
 float g_mm[8] = {0.f,0.806f,0.147f,1.f,-1,-1,-1,-1};   // minimap overlay: source rect (backbuffer uv), dest rect (eye uv), dest x<0 = off
 // 0.5.0: destination anchor (x, y, height in eye uv) + on flag; the source rect comes from the game (real radar position)
 float g_mmDst[3] = {0.20f, 0.66f, 0.22f}; bool g_mmOn = true;
+// 0.5.3 comfort vignette: x = current darkness 0..1 (set by the game script while moving / turning), y = inner radius
+volatile float g_vig[2] = {0.f, 0.55f};
 void mmRecalc(float srcAspect) {   // srcAspect = radar width / height in pixels
     float w = g_mmDst[2] * srcAspect; if (w > 0.6f) w = 0.6f;
     float x1 = g_mmDst[0] + w, y1 = g_mmDst[1] + g_mmDst[2];
@@ -26,14 +28,16 @@ void mmRecalc(float srcAspect) {   // srcAspect = radar width / height in pixels
 }
 
 const char* kHlsl =
-"cbuffer C : register(b0) { float4 p; float4 m; float4 d; };\n"
+"cbuffer C : register(b0) { float4 p; float4 m; float4 d; float4 v; };\n"
 "Texture2D t : register(t0); SamplerState s : register(s0);\n"
 "struct VO { float4 pos : SV_Position; float2 uv : TEXCOORD0; };\n"
 "VO vs(uint id : SV_VertexID) { VO o; float2 uv = float2((id << 1) & 2, id & 2);\n"
 "  o.pos = float4(uv * float2(2, -2) + float2(-1, 1), 0, 1); o.uv = uv; return o; }\n"
 "float4 ps(VO i) : SV_Target { float2 uv = float2(p.y + i.uv.x * p.x, i.uv.y);\n"
-"  if (d.x >= 0 && i.uv.x >= d.x && i.uv.x <= d.z && i.uv.y >= d.y && i.uv.y <= d.w) uv = lerp(m.xy, m.zw, (i.uv - d.xy) / (d.zw - d.xy));\n"
+"  bool mm = d.x >= 0 && i.uv.x >= d.x && i.uv.x <= d.z && i.uv.y >= d.y && i.uv.y <= d.w;\n"
+"  if (mm) uv = lerp(m.xy, m.zw, (i.uv - d.xy) / (d.zw - d.xy));\n"
 "  float4 c = t.Sample(s, uv); if (p.w > 0.5) c = float4(i.uv.x, i.uv.y, 0.5 + 0.5 * step(0.5, frac(i.uv.x * 8)), 1);\n"
+"  if (!mm && v.x > 0.001) { float r = length((i.uv - 0.5) * 2.0); c.rgb *= 1.0 - v.x * smoothstep(v.y, v.y + 0.35, r); }\n"
 "  if (p.z > 0.5) c.rgb = pow(abs(c.rgb), 2.2); return float4(c.rgb, 1); }\n";
 
 template<class T> void rel(T*& p) { if (p) { p->Release(); p = nullptr; } }
@@ -58,7 +62,7 @@ bool init(ID3D11Device* dev) {
     D3D11_SAMPLER_DESC sd{}; sd.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
     sd.AddressU = sd.AddressV = sd.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP; sd.MaxLOD = D3D11_FLOAT32_MAX;
     dev->CreateSamplerState(&sd, &g_smp);
-    D3D11_BUFFER_DESC bd{}; bd.ByteWidth = 48; bd.Usage = D3D11_USAGE_DEFAULT; bd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+    D3D11_BUFFER_DESC bd{}; bd.ByteWidth = 64; bd.Usage = D3D11_USAGE_DEFAULT; bd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
     dev->CreateBuffer(&bd, nullptr, &g_cb);
     D3D11_RASTERIZER_DESC rd{}; rd.FillMode = D3D11_FILL_SOLID; rd.CullMode = D3D11_CULL_NONE; rd.DepthClipEnable = TRUE;
     dev->CreateRasterizerState(&rd, &g_rs);
@@ -101,7 +105,8 @@ bool draw(ID3D11DeviceContext* ctx, ID3D11Texture2D* bb, ID3D11Texture2D* eyeTex
     }
     // centre crop: the game camera's vertical fov = eye fov, so take a slice of width height*eyeAspect
     float sx = (float)bd.Height * eyeAspect / (float)bd.Width; if (sx > 1.f) sx = 1.f;
-    float cb[12] = {sx, 0.5f - 0.5f * sx, linearize ? 1.f : 0.f, testPattern ? 1.f : 0.f};
+    float cb[16] = {sx, 0.5f - 0.5f * sx, linearize ? 1.f : 0.f, testPattern ? 1.f : 0.f};
+    cb[12] = g_vig[0]; cb[13] = g_vig[1];
     // minimap: the radar sits in the bottom-left corner of the frame, which the centre crop cuts away; it is copied
     // into the visible part. 0.5.0: the source rect is the radar's real place (from the game), not a 16:9 guess.
     if (g_mm[4] >= 0.f) {
@@ -129,6 +134,7 @@ bool draw(ID3D11DeviceContext* ctx, ID3D11Texture2D* bb, ID3D11Texture2D* eyeTex
 }
 
 void reset() { rel(g_srv); rel(g_tmp); }
+void setVignette(float amount, float inner) { g_vig[1] = inner; g_vig[0] = amount; }
 void setMinimap(bool on, float dx, float dy, float size) {
     g_mmOn = on; g_mmDst[0] = dx; g_mmDst[1] = dy; g_mmDst[2] = size;
     float a = (g_mm[3] > g_mm[1]) ? (g_mm[2] - g_mm[0]) * (16.f / 9.f) / (g_mm[3] - g_mm[1]) : 1.2f;
