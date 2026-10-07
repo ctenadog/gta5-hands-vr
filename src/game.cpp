@@ -82,11 +82,11 @@ void readCamIni() {
     char m[MAX_PATH]; GetModuleFileNameA(nullptr, m, MAX_PATH); std::string d = m; d = d.substr(0, d.find_last_of("\\/") + 1) + "GTA5VR.ini";
     auto def = [&](const char* k, const char* v) { if (GetPrivateProfileIntA("vr", k, -12345, d.c_str()) == -12345) WritePrivateProfileStringA("vr", k, v, d.c_str()); };
     def("eye_up", "12"); def("eye_forward", "12"); def("head_smooth", "25"); def("car_hard_attach", "1");
-    def("head_bob", "0"); def("comfort_vignette", "60"); def("vignette_size", "55");
+    def("head_bob", "0");
     g_headBob = GetPrivateProfileIntA("vr", "head_bob", 0, d.c_str()) != 0;
-    g_vigMax = std::max(0, std::min(100, (int)GetPrivateProfileIntA("vr", "comfort_vignette", 60, d.c_str()))) / 100.f;
-    g_vigInner = std::max(20, std::min(95, (int)GetPrivateProfileIntA("vr", "vignette_size", 55, d.c_str()))) / 100.f;
-    vrlog::write("comfort: GTA5VR.ini head_bob=%d comfort_vignette=%.0f%% vignette_size=%.0f%%", g_headBob, g_vigMax * 100, g_vigInner * 100);
+    // 0.5.4: comfort vignette removed at the user's request (old comfort_vignette / vignette_size keys are ignored)
+    g_vigMax = 0.f;
+    vrlog::write("comfort: GTA5VR.ini head_bob=%d, vignette removed (0.5.4)", g_headBob);
     g_eyeUp  = (int)GetPrivateProfileIntA("vr", "eye_up", 12, d.c_str()) / 100.f;
     g_eyeFwd = (int)GetPrivateProfileIntA("vr", "eye_forward", 12, d.c_str()) / 100.f;
     int sm = (int)GetPrivateProfileIntA("vr", "head_smooth", 25, d.c_str()); g_smooth = fmaxf(0.02f, fminf(1.f, sm / 100.f));
@@ -505,7 +505,7 @@ void releaseCamera() {
 }
 
 namespace game {
-void toggle() { g_enabled = !g_enabled; if (g_enabled) { ++g_gen; g_yawRefSet = false; } vrlog::write("F8: VR %s", g_enabled ? "on" : "off"); }
+void toggle() { g_enabled = !g_enabled; if (g_enabled) { ++g_gen; g_yawRefSet = false; } vrlog::write("F8: VR on", g_enabled ? "on" : "off"); }
 void forceOff() { if (g_enabled) { g_enabled = false; vrlog::write("VR switched off automatically"); } }
 int generation() { return g_gen; }
 void recenter() { g_yawRefSet = false; vrlog::write("F9: recenter"); }
@@ -535,7 +535,7 @@ void tick() {
     float yaw = frameYaw(ped, s);
     V anchor = headCamera(ped, s, yaw, inVehicle);
     bodyFollow(ped, s, inVehicle, dt);
-    comfortVignette(s, inVehicle, dt);
+    blit::setVignette(0.f, g_vigInner);   // 0.5.4: no edge darkening
     minimapSource();
     armFollow(ped, s, inVehicle, yaw, anchor);
     { const XrPoseF3* g[2] = {&s.pose[IN_LEFT_GRIP_POSE], &s.pose[IN_RIGHT_GRIP_POSE]}; hands::tick(ped, g, yaw); }
