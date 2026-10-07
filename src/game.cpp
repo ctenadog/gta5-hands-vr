@@ -11,6 +11,7 @@
 #include "log.h"
 #include "game.h"
 #include "hands.h"
+#include "blit.h"
 
 namespace {
 int  g_cam = 0;
@@ -443,7 +444,29 @@ void hideHead(int ped) {
 }
 void showHead() { hands::setHideHead(false); restoreProps(); }
 
-bool g_radarChecked = false;
+bool g_radarChecked = false; ULONGLONG g_mmTime = 0;
+// 0.5.0 minimap: where GTA draws the radar, from the safe-zone setting (Settings > Display > Safezone size) and the
+// aspect ratio - the formula the game's own HUD layout follows (radar = 1/(4*aspect) of the width, 0.188 of the
+// height, inset 0.5*(1-safezone) from the left/bottom; the health/armour bars are inside that box).
+void minimapSource() {
+    ULONGLONG now = GetTickCount64();
+    if (g_radarChecked && now - g_mmTime < 3000) return;
+    g_mmTime = now;
+    float sz = natives::invoke<float>(N_GET_SAFE_ZONE_SIZE); if (!(sz >= 0.85f && sz <= 1.01f)) sz = 1.f;
+    float ar = natives::invoke<float>(N_GET_ASPECT_RATIO, 0); if (!(ar > 0.9f && ar < 5.f)) ar = 16.f / 9.f;
+    float inset = 0.5f * (1.f - sz) * 1.f;                 // 0.05 * (1-sz) * 10
+    float w = 1.f / (4.f * ar), h = 0.188f;
+    float x0 = inset, yb = 1.f - inset;
+    float pad = 0.006f;
+    float sx0 = fmaxf(0.f, x0 - pad), sx1 = fminf(1.f, x0 + w + pad);
+    float sy0 = fmaxf(0.f, yb - h - pad), sy1 = fminf(1.f, yb + pad);
+    blit::setMinimapSource(sx0, sy0, sx1, sy1, ar);
+    if (!g_radarChecked) {
+        g_radarChecked = true;
+        if (natives::invoke<int>(N_IS_RADAR_HIDDEN)) { natives::invoke(N_DISPLAY_RADAR, 1); vrlog::write("minimap: radar was hidden - switched on"); }
+        vrlog::write("minimap: safezone %.2f, aspect %.2f -> radar at x %.3f-%.3f, y %.3f-%.3f of the screen", sz, ar, sx0, sx1, sy0, sy1);
+    }
+}
 void releaseCamera() {
     g_radarChecked = false;
     showHead();
@@ -459,12 +482,20 @@ int generation() { return g_gen; }
 void recenter() { g_yawRefSet = false; vrlog::write("F9: recenter"); }
 bool enabled() { return g_enabled; }
 
+bool g_inSwitch = false;
 void toggleArms() { g_armsOn = !g_armsOn; vrlog::write("F11: arm IK %s", g_armsOn ? "on" : "off"); }
 
 void tick() {
     if (!natives::ready()) return;
     if (!onlineGuard() || !g_enabled) { releaseCamera(); return; }
     if (natives::invoke<int>(N_GET_IS_LOADING_SCREEN_ACTIVE) || natives::invoke<int>(N_IS_PAUSE_MENU_ACTIVE)) { releaseCamera(); return; }
+    // 0.5.0: character switch (Michael / Franklin / Trevor): the game flies its own sky camera - let it, then take over
+    // the new character (camera, head hiding, hands are re-bound to it in hands.cpp)
+    if (natives::invoke<int>(N_IS_PLAYER_SWITCH_IN_PROGRESS)) {
+        if (!g_inSwitch) { g_inSwitch = true; vrlog::write("switch: character switch started - VR camera paused"); }
+        releaseCamera(); return;
+    }
+    if (g_inSwitch) { g_inSwitch = false; g_yawRefSet = false; vrlog::write("switch: finished - VR camera on the new character"); }
     VrState s = xr::snapshot();
     if (!s.running) { releaseCamera(); return; }
     if (g_lastTick && GetTickCount64() - g_lastTick > 500) g_lastTick = 0;
@@ -475,11 +506,7 @@ void tick() {
     float yaw = frameYaw(ped, s);
     V anchor = headCamera(ped, s, yaw, inVehicle);
     bodyFollow(ped, s, inVehicle, dt);
-    if (!g_radarChecked) {   // 0.4.9 minimap: make sure the radar is drawn (the helper copies it into the headset view)
-        g_radarChecked = true;
-        if (natives::invoke<int>(N_IS_RADAR_HIDDEN)) { natives::invoke(N_DISPLAY_RADAR, 1); vrlog::write("minimap: radar was hidden - switched on"); }
-        else vrlog::write("minimap: radar is on");
-    }
+    minimapSource();
     armFollow(ped, s, inVehicle, yaw, anchor);
     { const XrPoseF3* g[2] = {&s.pose[IN_LEFT_GRIP_POSE], &s.pose[IN_RIGHT_GRIP_POSE]}; hands::tick(ped, g, yaw); }
     hideHead(ped);

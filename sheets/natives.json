@@ -56,6 +56,7 @@
   {"name": "GET_ASPECT_RATIO", "hash": "0xF1307EF624A80D87", "args": "int b", "ret": "float", "verified": false},
   {"name": "IS_RADAR_HIDDEN", "hash": "0x157F93B036700462", "args": "none", "ret": "int", "verified": false},
   {"name": "HIDE_HUD_COMPONENT_THIS_FRAME", "hash": "0x6806C51AD12B83B8", "args": "int id", "ret": "void", "verified": false},
-  {"name": "DISPLAY_RADAR", "hash": "0xA0EBB943C300E693", "args": "int toggle", "ret": "void", "verified": false}
+  {"name": "DISPLAY_RADAR", "hash": "0xA0EBB943C300E693", "args": "int toggle", "ret": "void", "verified": false},
+  {"name": "IS_PLAYER_SWITCH_IN_PROGRESS", "hash": "0xD9D2CFFF49FAB35F", "args": "none", "ret": "int", "verified": false}
  ]
 }
