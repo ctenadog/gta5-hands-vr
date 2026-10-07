@@ -188,15 +188,51 @@ void armFollow(int ped, const VrState& s, bool inVehicle, float yaw, V anchor) {
     }
 }
 
-// systems.weapon_aim: right controller's aim ray; trigger shoots at its end point
+// systems.weapon_aim. 0.4.8: the shot goes where the drawn pistol points, not along the OpenXR "aim" pose.
+// 0.4.7 user report: hands/pistol look right but bullets fly up - on Pico Neo 3 via SteamVR the aim pose is tilted
+// against the grip pose. Now: direction = grip -Y (the same axis hands.cpp uses for wrist -> knuckles = barrel),
+// origin = the right hand bone. GTA5VR.ini aim_source=grip|aim (aim = 0.4.7 behaviour), aim_pitch = degrees (+ up).
+int g_aimSrc = -1; float g_aimPitch = 0.f; int g_handBonePed = 0, g_rHandIdx = -1; ULONGLONG g_aimDbg = 0;
+float pitchOf(V d) { float l = len(d); return l > 1e-4f ? asinf(fmaxf(-1.f, fminf(1.f, d.z / l))) * 57.29578f : 0.f; }
 void weaponAim(int ped, const VrState& s, bool inVehicle, float yaw, V anchor) {
     if (inVehicle) return;
-    const XrPoseF3& p = s.pose[IN_RIGHT_AIM_POSE];
+    if (g_aimSrc < 0) {
+        char m[MAX_PATH]; GetModuleFileNameA(nullptr, m, MAX_PATH); std::string d = m; d = d.substr(0, d.find_last_of("\\/") + 1) + "GTA5VR.ini";
+        char buf[16] = {0};
+        GetPrivateProfileStringA("vr", "aim_source", "", buf, sizeof buf, d.c_str());
+        if (!buf[0]) { WritePrivateProfileStringA("vr", "aim_source", "grip", d.c_str()); strcpy(buf, "grip"); }
+        if (GetPrivateProfileIntA("vr", "aim_pitch", -12345, d.c_str()) == -12345) WritePrivateProfileStringA("vr", "aim_pitch", "0", d.c_str());
+        g_aimSrc = (_stricmp(buf, "aim") == 0) ? 1 : 0;
+        g_aimPitch = (int)GetPrivateProfileIntA("vr", "aim_pitch", 0, d.c_str()) * 0.0174533f;
+        vrlog::write("aim: GTA5VR.ini aim_source=%s aim_pitch=%.0f", g_aimSrc ? "aim" : "grip", g_aimPitch * 57.3f);
+    }
+    const XrPoseF3& g = s.pose[IN_RIGHT_GRIP_POSE];
+    const XrPoseF3& a = s.pose[IN_RIGHT_AIM_POSE];
+    bool useAim = g_aimSrc == 1 || !g.valid;
+    const XrPoseF3& p = useAim ? a : g;
     if (!p.valid || s.value[IN_FIRE] < kTrigger) return;
+    // barrel axis in controller space, tilted by aim_pitch about controller X (+ = up for a pistol grip)
+    float cp = cosf(g_aimPitch), sp = sinf(g_aimPitch);
+    V local = useAim ? V{0.f, sp, -cp} : V{0.f, -cp, -sp};
+    V dir = xrToGta(qrot(p, local), yaw);
+    { float l = len(dir); if (l > 1e-4f) dir = {dir.x / l, dir.y / l, dir.z / l}; }
+    // origin: the real right hand of the character (falls back to the controller position)
+    if (ped != g_handBonePed) { g_handBonePed = ped; g_rHandIdx = natives::invoke<int>(N_GET_PED_BONE_INDEX, ped, 57005 /*SKEL_R_Hand*/); }
     V origin = add(anchor, xrToGta(sub(xrPos(p), xrPos(s.head)), yaw));
-    V dir = xrToGta(qrot(p, {0,0,-1}), yaw);
+    if (g_rHandIdx >= 0) {
+        Vector3 h = natives::invokeV3(N_GET_WORLD_POSITION_OF_ENTITY_BONE, ped, g_rHandIdx);
+        V hv{h.x, h.y, h.z}; if (len(sub(hv, anchor)) < 2.f) origin = hv;
+    }
     V t = add(origin, {dir.x*kAimRay, dir.y*kAimRay, dir.z*kAimRay});
     natives::invoke(N_SET_PED_SHOOTS_AT_COORD, ped, t.x, t.y, t.z, 1);
+    ULONGLONG now = GetTickCount64();
+    if (now - g_aimDbg > 1000) {
+        g_aimDbg = now;
+        V dg = g.valid ? xrToGta(qrot(g, {0,-1,0}), yaw) : V{0,0,0};
+        V da = a.valid ? xrToGta(qrot(a, {0,0,-1}), yaw) : V{0,0,0};
+        V dh = xrToGta(qrot(s.head, {0,0,-1}), yaw);
+        vrlog::write("aim: shot via %s, pitch shot %.0f | grip %.0f | aim pose %.0f | head %.0f deg", useAim ? "aim pose" : "grip", pitchOf(dir), pitchOf(dg), pitchOf(da), pitchOf(dh));
+    }
 }
 
 // right stick: snap turn 30 degrees
