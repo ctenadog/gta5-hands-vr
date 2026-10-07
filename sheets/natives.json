@@ -71,6 +71,10 @@
   {"name": "ADD_TEXT_COMPONENT_SUBSTRING_PLAYER_NAME", "hash": "0x6C188BE134E074AA", "args": "const char* text", "ret": "void", "verified": false},
   {"name": "END_TEXT_COMMAND_PRINT", "hash": "0x9D77056A530643F6", "args": "int duration, int now", "ret": "void", "verified": false},
   {"name": "GET_CURRENT_LANGUAGE", "hash": "0x2BDD44CC428A7EAE", "args": "none", "ret": "int", "verified": false},
-  {"name": "SET_PED_RESET_FLAG", "hash": "0xC1E8A365BF3B29F2", "args": "int ped, int flagId, int value", "ret": "void", "verified": false}
+  {"name": "SET_PED_RESET_FLAG", "hash": "0xC1E8A365BF3B29F2", "args": "int ped, int flagId, int value", "ret": "void", "verified": false},
+  {"name": "ACTIVATE_FRONTEND_MENU", "hash": "0xEF01D36B9C9D0C7B", "args": "Hash menu, int togglePause, int component", "ret": "void", "verified": false},
+  {"name": "SET_FRONTEND_ACTIVE", "hash": "0x745711A75AB09277", "args": "int active", "ret": "void", "verified": false},
+  {"name": "IS_PED_RUNNING_MOBILE_PHONE_TASK", "hash": "0x2AFE52F782F25775", "args": "int ped", "ret": "int", "verified": false},
+  {"name": "DISABLE_CONTROL_ACTION", "hash": "0xFE99B66D079CF6BC", "args": "int pad, int control, int disableRelated", "ret": "void", "verified": false}
  ]
 }

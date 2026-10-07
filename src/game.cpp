@@ -360,6 +360,56 @@ void nextWeapon(int ped) {
         if (i == 0 || natives::invoke<int>(N_HAS_PED_GOT_WEAPON, ped, h, 0)) { natives::invoke(N_SET_CURRENT_PED_WEAPON, ped, h, 1); vrlog::write("weapon: %s", kWeapons[i]); return; }
     }
 }
+// 0.6.4: pause menu and phone from the controllers. Both are driven with simulated KEYBOARD presses (SendInput,
+// scancodes), the same keys a PC player uses: the game reacts to them in every menu, while SET_CONTROL_VALUE_NEXT_FRAME
+// is not taken as a fresh press (0.4.6 lesson). Keys go out only while the GTA window has focus.
+//   Pause menu: Esc. Arrows = navigate, Enter = select, Backspace = back, Q / E = previous / next tab.
+//   Phone: Up arrow takes it out; arrows / Enter / Backspace work inside; Backspace on the home screen puts it away.
+bool gameHasFocus() { DWORD pid = 0; HWND w = GetForegroundWindow(); if (w) GetWindowThreadProcessId(w, &pid); return pid == GetCurrentProcessId(); }
+int g_heldVk = 0; ULONGLONG g_releaseAt = 0;
+void sendKey(int vk, bool down) {
+    INPUT in{}; in.type = INPUT_KEYBOARD;
+    in.ki.wScan = (WORD)MapVirtualKeyA(vk, MAPVK_VK_TO_VSC);
+    in.ki.dwFlags = KEYEVENTF_SCANCODE | (down ? 0 : KEYEVENTF_KEYUP);
+    if (vk == VK_UP || vk == VK_DOWN || vk == VK_LEFT || vk == VK_RIGHT) in.ki.dwFlags |= KEYEVENTF_EXTENDEDKEY;
+    SendInput(1, &in, sizeof(in));
+}
+void releaseKey() { if (g_heldVk) { sendKey(g_heldVk, false); g_heldVk = 0; } }
+// press now, release ~70 ms later (a down+up in the same instant can fall between two game frames)
+void tapKey(int vk, const char* why) {
+    if (!gameHasFocus()) return;
+    releaseKey();
+    sendKey(vk, true); g_heldVk = vk; g_releaseAt = GetTickCount64() + 70;
+    vrlog::write("menu: key %s (%s)", vk == VK_ESCAPE ? "Esc" : vk == VK_RETURN ? "Enter" : vk == VK_BACK ? "Backspace" : vk == VK_UP ? "Up" : vk == VK_DOWN ? "Down" : vk == VK_LEFT ? "Left" : vk == VK_RIGHT ? "Right" : vk == 'Q' ? "Q" : vk == 'E' ? "E" : "?", why);
+}
+void keyTick() { if (g_heldVk && GetTickCount64() >= g_releaseAt) releaseKey(); }
+// stick -> arrow keys with auto-repeat (first repeat after 400 ms, then every 180 ms)
+int g_stickDir = 0; ULONGLONG g_stickNext = 0;
+void stickArrows(float x, float y, const char* why) {
+    int dir = 0;
+    if (fabsf(x) > 0.6f || fabsf(y) > 0.6f) dir = fabsf(x) > fabsf(y) ? (x > 0 ? VK_RIGHT : VK_LEFT) : (y > 0 ? VK_UP : VK_DOWN);
+    ULONGLONG now = GetTickCount64();
+    if (!dir) { g_stickDir = 0; return; }
+    if (dir != g_stickDir) { g_stickDir = dir; g_stickNext = now + 400; tapKey(dir, why); }
+    else if (now >= g_stickNext) { g_stickNext = now + 180; tapKey(dir, why); }
+}
+int g_tabDir = 0;
+bool g_phoneWas = false;
+// returns true while the phone is out: the left stick / A / B then drive the phone instead of the character
+bool phoneButtons(int ped, const VrState& s) {
+    bool out = natives::invoke<int>(N_IS_PED_RUNNING_MOBILE_PHONE_TASK, ped) != 0;
+    if (out != g_phoneWas) { g_phoneWas = out; vrlog::write("phone: %s", out ? "out" : "put away"); }
+    bool grip = s.value[IN_PHONE] > 0.7f, gripHit = grip && !g_prevBtn[IN_PHONE];
+    if (pressed(s, IN_MENU)) tapKey(VK_ESCAPE, "menu button: pause menu");
+    if (!out) {
+        if (gripHit) tapKey(VK_UP, "left grip: take out the phone");
+        return false;
+    }
+    stickArrows(s.value[IN_MOVE_X], s.value[IN_MOVE_Y], "phone: left stick");
+    if (pressed(s, IN_JUMP)) tapKey(VK_RETURN, "phone: A = select");
+    if (pressed(s, IN_ENTER_VEHICLE) || gripHit) tapKey(VK_BACK, "phone: B / left grip = back, put away");
+    return true;
+}
 void specialButtons(int ped, const VrState& s, bool inVehicle) {
     if (pressed(s, IN_ENTER_VEHICLE)) {
         if (inVehicle) {
@@ -390,8 +440,10 @@ void logInputs(const VrState& s) {
 }
 
 // systems.controller_input: every non-pose row of sheets/inputs.json feeds its GTA control
+bool g_phoneOut = false;
 void controllerInput(const VrState& s, bool inVehicle) {
     for (int i = 0; i < IN_COUNT; ++i) {
+        if (g_phoneOut && (i == IN_MOVE_X || i == IN_MOVE_Y || i == IN_JUMP || i == IN_FIRE || i == IN_AIM || i == IN_RELOAD || i == IN_SPRINT)) continue;
         const InputRow& r = kInputs[i];
         if (r.type == XrType::Pose) continue;
         if (i == IN_FIRE && !inVehicle) continue;            // on foot, fire goes through weapon_aim
@@ -475,6 +527,7 @@ void releaseCamera() {
     if (g_cam) { natives::invoke(N_DETACH_CAM, g_cam); natives::invoke(N_RENDER_SCRIPT_CAMS, 0, 0, 0, 1, 0, 0); natives::invoke(N_SET_CAM_ACTIVE, g_cam, 0); natives::invoke(N_DESTROY_CAM, g_cam, 0); g_cam = 0; }
 }
 
+
 // 0.6.0: short on-screen messages (bottom of the screen = also visible in the headset), Russian, UTF-8.
 // A text component holds at most ~99 bytes, so long texts are split on UTF-8 character boundaries.
 void showText(const char* t, int ms) {
@@ -514,12 +567,29 @@ void toggleArms() { g_armsOn = !g_armsOn; vrlog::write("F11: arm IK %s", g_armsO
 
 void tick() {
     if (!natives::ready()) return;
+    keyTick();   // 0.6.4: release a simulated key press after ~70 ms (also when VR is off)
     bool loading = natives::invoke<int>(N_GET_IS_LOADING_SCREEN_ACTIVE) != 0;
     if (g_autoOff.exchange(false)) showText(tr("VR выключился из-за ошибки. Проверьте, что SteamVR запущен и шлем подключён, и нажмите F8.", "VR stopped because of an error. Check that SteamVR runs and the headset is connected, then press F8."), 7000);
     if (!g_hello && !loading && !g_enabled) { g_hello = true; showText(tr("GTA V Hands VR: запустите SteamVR, наденьте шлем и нажмите F8.", "GTA V Hands VR: start SteamVR, put the headset on and press F8."), 7000); }
     if (!onlineGuard()) { if (g_enabled) { g_enabled = false; showText(tr("GTA Online: VR-мод отключён (только сюжетный режим).", "GTA Online: VR mod switched off (story mode only)."), 5000); } releaseCamera(); return; }
     if (!g_enabled) { releaseCamera(); return; }
-    if (loading || natives::invoke<int>(N_IS_PAUSE_MENU_ACTIVE)) { releaseCamera(); return; }
+    if (loading) { releaseCamera(); return; }
+    if (natives::invoke<int>(N_IS_PAUSE_MENU_ACTIVE)) {
+        // 0.6.4: pause menu from the controllers (the image in the headset is the flat game screen meanwhile)
+        releaseCamera();
+        VrState m = xr::snapshot();
+        if (m.running) {
+            stickArrows(m.value[IN_MOVE_X], m.value[IN_MOVE_Y], "pause menu: left stick");
+            if (pressed(m, IN_JUMP) || (m.value[IN_FIRE] > kTrigger && !g_prevBtn[IN_FIRE])) tapKey(VK_RETURN, "pause menu: A / right trigger = select");
+            if (pressed(m, IN_ENTER_VEHICLE)) tapKey(VK_BACK, "pause menu: B = back");
+            if (pressed(m, IN_MENU)) tapKey(VK_ESCAPE, "pause menu: menu button = close");
+            int tab = m.value[IN_TURN_X] > 0.7f ? 1 : (m.value[IN_TURN_X] < -0.7f ? -1 : 0);
+            if (tab && tab != g_tabDir) tapKey(tab > 0 ? 'E' : 'Q', "pause menu: right stick = tab");
+            g_tabDir = tab;
+            logInputs(m);
+        }
+        return;
+    }
     // 0.5.0: character switch (Michael / Franklin / Trevor): the game flies its own sky camera - let it, then take over
     // the new character (camera, head hiding, hands are re-bound to it in hands.cpp)
     if (natives::invoke<int>(N_IS_PLAYER_SWITCH_IN_PROGRESS)) {
@@ -551,7 +621,8 @@ void tick() {
     { const XrPoseF3* g[2] = {&s.pose[IN_LEFT_GRIP_POSE], &s.pose[IN_RIGHT_GRIP_POSE]}; hands::tick(ped, g, yaw); }
     hideHead(ped);
     weaponAim(ped, s, inVehicle, yaw, anchor);
-    specialButtons(ped, s, inVehicle);
+    g_phoneOut = phoneButtons(ped, s);
+    if (!g_phoneOut) specialButtons(ped, s, inVehicle);
     controllerInput(s, inVehicle);
     logInputs(s);   // must run last: updates the previous-button state used by pressed()
 }

@@ -38,4 +38,5 @@ struct Shm {
 };
 
 inline void shmName(DWORD pid, wchar_t* buf, size_t n) { swprintf(buf, n, L"Local\\GTA5VR_shm_%lu", (unsigned long)pid); }
+inline bool poseOk(const float* p) { float n = p[0]*p[0] + p[1]*p[1] + p[2]*p[2] + p[3]*p[3]; return n > 0.9f && n < 1.1f; }
 }
