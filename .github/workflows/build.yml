@@ -12,23 +12,22 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-      - name: Install mingw-w64
-        timeout-minutes: 15
+      - name: Get mingw compiler (llvm-mingw, prebuilt, no apt)
+        timeout-minutes: 8
         run: |
-          # apt on the runner sometimes hangs on the default mirror: limit each try, then switch mirror
+          # apt on the runner hung several times; llvm-mingw is a self-contained x86_64-w64-mingw32 toolchain on GitHub
+          V=20261006
           for i in 1 2 3; do
-            if timeout 240 sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 update -qq && \
-               timeout 300 sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 install -y -qq --no-install-recommends mingw-w64 zip unzip; then
-              exit 0
-            fi
-            echo "apt try $i failed - switching mirror"
-            sudo sed -i -E 's#https?://[a-z.]*archive\.ubuntu\.com/ubuntu#http://mirror.yandex.ru/ubuntu#g' /etc/apt/sources.list /etc/apt/sources.list.d/*.sources 2>/dev/null || true
-            [ $i = 2 ] && sudo sed -i -E 's#http://mirror\.yandex\.ru/ubuntu#http://archive.ubuntu.com/ubuntu#g' /etc/apt/sources.list /etc/apt/sources.list.d/*.sources 2>/dev/null || true
+            curl -sSL --retry 3 --max-time 300 -o lm.tar.xz "https://github.com/mstorsjo/llvm-mingw/releases/download/$V/llvm-mingw-$V-ucrt-ubuntu-22.04-x86_64.tar.xz" && break
+            sleep 5
           done
-          exit 1
+          mkdir -p $HOME/lm && tar xf lm.tar.xz -C $HOME/lm --strip-components=1
+          echo "$HOME/lm/bin" >> $GITHUB_PATH
+          $HOME/lm/bin/x86_64-w64-mingw32-g++ --version | head -1
+          which zip unzip
       - name: Build
         run: sh ci/build.sh
       - uses: actions/upload-artifact@v4
