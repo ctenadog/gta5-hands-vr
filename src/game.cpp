@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <string>
 #include <type_traits>
+#include <atomic>
 #include "natives.h"
 #include "xr.h"
 #include "log.h"
@@ -75,18 +76,11 @@ bool onlineGuard() {
 float g_eyeUp = 0.12f, g_eyeFwd = 0.12f, g_smooth = 0.25f; bool g_carHard = true; bool g_camIniRead = false;
 // 0.5.3 comfort: head_bob=0 (default) keeps the on-foot camera steady instead of following every step / sprint lean of
 // the neck bone (the 0.5.1 log: neck forward offset jumped 0 -> 0.28 m while running = the view rocks back and forth).
-// comfort_vignette = 0..100 % darkening of the image edges while moving / turning, vignette_size = inner radius %.
-int g_headBob = 0; float g_vigMax = 0.6f, g_vigInner = 0.55f, g_vigCur = 0.f; bool g_onFoot = true;
+int g_headBob = 0; bool g_onFoot = true;
 void readCamIni() {
     if (g_camIniRead) return; g_camIniRead = true;
     char m[MAX_PATH]; GetModuleFileNameA(nullptr, m, MAX_PATH); std::string d = m; d = d.substr(0, d.find_last_of("\\/") + 1) + "GTA5VR.ini";
-    auto def = [&](const char* k, const char* v) { if (GetPrivateProfileIntA("vr", k, -12345, d.c_str()) == -12345) WritePrivateProfileStringA("vr", k, v, d.c_str()); };
-    def("eye_up", "12"); def("eye_forward", "12"); def("head_smooth", "25"); def("car_hard_attach", "1");
-    def("head_bob", "0");
     g_headBob = GetPrivateProfileIntA("vr", "head_bob", 0, d.c_str()) != 0;
-    // 0.5.4: comfort vignette removed at the user's request (old comfort_vignette / vignette_size keys are ignored)
-    g_vigMax = 0.f;
-    vrlog::write("comfort: GTA5VR.ini head_bob=%d, vignette removed (0.5.4)", g_headBob);
     g_eyeUp  = (int)GetPrivateProfileIntA("vr", "eye_up", 12, d.c_str()) / 100.f;
     g_eyeFwd = (int)GetPrivateProfileIntA("vr", "eye_forward", 12, d.c_str()) / 100.f;
     int sm = (int)GetPrivateProfileIntA("vr", "head_smooth", 25, d.c_str()); g_smooth = fmaxf(0.02f, fminf(1.f, sm / 100.f));
@@ -182,8 +176,6 @@ float g_armScale = 1.2f, g_armFwd = 0.12f; bool g_armIni = false;
 void readArmIni() {
     if (g_armIni) return; g_armIni = true;
     char m[MAX_PATH]; GetModuleFileNameA(nullptr, m, MAX_PATH); std::string d = m; d = d.substr(0, d.find_last_of("\\/") + 1) + "GTA5VR.ini";
-    auto def = [&](const char* k, const char* v) { if (GetPrivateProfileIntA("vr", k, -12345, d.c_str()) == -12345) WritePrivateProfileStringA("vr", k, v, d.c_str()); };
-    def("arm_scale", "120"); def("arm_forward", "12");
     g_armScale = fmaxf(0.5f, fminf(2.f, (int)GetPrivateProfileIntA("vr", "arm_scale", 120, d.c_str()) / 100.f));
     g_armFwd = fmaxf(-0.3f, fminf(0.5f, (int)GetPrivateProfileIntA("vr", "arm_forward", 12, d.c_str()) / 100.f));
     vrlog::write("arms: GTA5VR.ini arm_scale=%.0f%% arm_forward=%.0f cm", g_armScale * 100, g_armFwd * 100);
@@ -219,8 +211,6 @@ int g_xhair = -1, g_xhairSize = 6; ULONGLONG g_xhDbg = 0;
 void crosshair(int ped, V origin, V dir) {
     if (g_xhair < 0) {
         char m[MAX_PATH]; GetModuleFileNameA(nullptr, m, MAX_PATH); std::string d = m; d = d.substr(0, d.find_last_of("\\/") + 1) + "GTA5VR.ini";
-        if (GetPrivateProfileIntA("vr", "crosshair", -12345, d.c_str()) == -12345) WritePrivateProfileStringA("vr", "crosshair", "1", d.c_str());
-        if (GetPrivateProfileIntA("vr", "crosshair_size", -12345, d.c_str()) == -12345) WritePrivateProfileStringA("vr", "crosshair_size", "6", d.c_str());
         g_xhair = GetPrivateProfileIntA("vr", "crosshair", 1, d.c_str()) != 0 ? 1 : 0;
         g_xhairSize = std::max(2, std::min(40, (int)GetPrivateProfileIntA("vr", "crosshair_size", 6, d.c_str())));
         vrlog::write("aim: GTA5VR.ini crosshair=%d crosshair_size=%d", g_xhair, g_xhairSize);
@@ -253,8 +243,7 @@ void weaponAim(int ped, const VrState& s, bool inVehicle, float yaw, V anchor) {
         char m[MAX_PATH]; GetModuleFileNameA(nullptr, m, MAX_PATH); std::string d = m; d = d.substr(0, d.find_last_of("\\/") + 1) + "GTA5VR.ini";
         char buf[16] = {0};
         GetPrivateProfileStringA("vr", "aim_source", "", buf, sizeof buf, d.c_str());
-        if (!buf[0]) { WritePrivateProfileStringA("vr", "aim_source", "grip", d.c_str()); strcpy(buf, "grip"); }
-        if (GetPrivateProfileIntA("vr", "aim_pitch", -12345, d.c_str()) == -12345) WritePrivateProfileStringA("vr", "aim_pitch", "0", d.c_str());
+        if (!buf[0]) strcpy(buf, "grip");
         g_aimSrc = (_stricmp(buf, "aim") == 0) ? 1 : 0;
         g_aimPitch = (int)GetPrivateProfileIntA("vr", "aim_pitch", 0, d.c_str()) * 0.0174533f;
         vrlog::write("aim: GTA5VR.ini aim_source=%s aim_pitch=%.0f", g_aimSrc ? "aim" : "grip", g_aimPitch * 57.3f);
@@ -298,12 +287,10 @@ int g_bodyFollow = 1; float g_bodyDead = 35.f, g_bodySpeed = 240.f; bool g_bodyT
 void readTurnIni() {
     if (g_turnMode >= 0) return;
     char m[MAX_PATH]; GetModuleFileNameA(nullptr, m, MAX_PATH); std::string d = m; d = d.substr(0, d.find_last_of("\\/") + 1) + "GTA5VR.ini";
-    auto def = [&](const char* k, const char* v) { if (GetPrivateProfileIntA("vr", k, -12345, d.c_str()) == -12345) WritePrivateProfileStringA("vr", k, v, d.c_str()); };
     char buf[16] = {0};
     GetPrivateProfileStringA("vr", "turn_mode", "", buf, sizeof buf, d.c_str());
-    if (!buf[0]) { WritePrivateProfileStringA("vr", "turn_mode", "smooth", d.c_str()); strcpy(buf, "smooth"); }
+    if (!buf[0]) strcpy(buf, "smooth");
     g_turnMode = (_stricmp(buf, "snap") == 0) ? 1 : 0;
-    def("turn_speed", "120"); def("snap_angle", "30"); def("body_follow", "1"); def("body_deadzone", "35"); def("body_speed", "240");
     g_turnSpeed = (float)std::max(20, std::min(720, (int)GetPrivateProfileIntA("vr", "turn_speed", 120, d.c_str())));
     g_snapAngle = (float)std::max(5, std::min(90, (int)GetPrivateProfileIntA("vr", "snap_angle", 30, d.c_str())));
     g_bodyFollow = GetPrivateProfileIntA("vr", "body_follow", 1, d.c_str()) != 0;
@@ -329,19 +316,6 @@ void snapTurn(const VrState& s, float dt) {
     }
     if (!g_turnLatch && fabsf(x) > 0.7f) { float d = (x > 0 ? g_snapAngle : -g_snapAngle); g_baseYaw -= d; g_vehYawOff -= d; g_turnLatch = true; }
     if (fabsf(x) < 0.3f) g_turnLatch = false;
-}
-// 0.5.3: comfort vignette strength from the sticks (walking, smooth turning); rises fast, fades slowly
-void comfortVignette(const VrState& s, bool inVehicle, float dt) {
-    float mv = inVehicle ? 0.f : fmaxf(fabsf(s.value[IN_MOVE_X]), fabsf(s.value[IN_MOVE_Y]));
-    float tn = (g_turnMode == 0) ? fabsf(s.value[IN_TURN_X]) : 0.f;
-    float want = 0.f;
-    if (mv > kDeadzone) want = fmaxf(want, 0.6f + 0.4f * (mv - kDeadzone) / (1.f - kDeadzone));
-    if (tn > 0.2f) want = 1.f;
-    want *= g_vigMax;
-    float rate = want > g_vigCur ? 4.f : 1.5f;   // per second
-    float st = rate * dt;
-    if (fabsf(want - g_vigCur) <= st) g_vigCur = want; else g_vigCur += (want > g_vigCur ? st : -st);
-    blit::setVignette(g_vigCur, g_vigInner);
 }
 float wrap180(float a) { while (a > 180.f) a -= 360.f; while (a < -180.f) a += 360.f; return a; }
 // 0.4.9: the character turns after the view on foot. Once the view is more than body_deadzone degrees away from where
@@ -443,7 +417,6 @@ int g_hideHeadIni = -1;
 bool hideHeadEnabled() {
     if (g_hideHeadIni < 0) {
         char m[MAX_PATH]; GetModuleFileNameA(nullptr, m, MAX_PATH); std::string d = m; d = d.substr(0, d.find_last_of("\\/") + 1) + "GTA5VR.ini";
-        if (GetPrivateProfileIntA("vr", "hide_head", -12345, d.c_str()) == -12345) WritePrivateProfileStringA("vr", "hide_head", "1", d.c_str());
         g_hideHeadIni = GetPrivateProfileIntA("vr", "hide_head", 1, d.c_str()) != 0 ? 1 : 0;
         vrlog::write("camera: GTA5VR.ini hide_head=%d", g_hideHeadIni);
     }
@@ -496,19 +469,44 @@ void minimapSource() {
     }
 }
 void releaseCamera() {
-    g_vigCur = 0.f; blit::setVignette(0.f, g_vigInner);
     g_radarChecked = false;
     showHead();
     g_neckPed = 0; g_camMode = 0;
     if (g_cam) { natives::invoke(N_DETACH_CAM, g_cam); natives::invoke(N_RENDER_SCRIPT_CAMS, 0, 0, 0, 1, 0, 0); natives::invoke(N_SET_CAM_ACTIVE, g_cam, 0); natives::invoke(N_DESTROY_CAM, g_cam, 0); g_cam = 0; }
 }
+
+// 0.6.0: short on-screen messages (bottom of the screen = also visible in the headset), Russian, UTF-8.
+// A text component holds at most ~99 bytes, so long texts are split on UTF-8 character boundaries.
+void showText(const char* t, int ms) {
+    natives::invoke(N_BEGIN_TEXT_COMMAND_PRINT, "STRING");
+    std::string all = t; size_t i = 0;
+    while (i < all.size()) {
+        size_t n = std::min<size_t>(90, all.size() - i);
+        while (i + n < all.size() && ((unsigned char)all[i + n] & 0xC0) == 0x80) --n;
+        std::string part = all.substr(i, n); i += n;
+        natives::invoke(N_ADD_TEXT_COMPONENT_SUBSTRING_PLAYER_NAME, part.c_str());
+    }
+    natives::invoke(N_END_TEXT_COMMAND_PRINT, ms, 1);
+}
+// Russian text only when the game itself runs in Russian (its font then surely has Cyrillic), otherwise English
+int g_lang = -1;
+const char* tr(const char* ru, const char* en) { if (g_lang < 0) g_lang = natives::invoke<int>(N_GET_CURRENT_LANGUAGE); return g_lang == 7 ? ru : en; }
+std::atomic<bool> g_autoOff{false};
+bool g_wasRunning = false, g_hello = false; ULONGLONG g_onTime = 0, g_waitHint = 0;
 }
 
 namespace game {
-void toggle() { g_enabled = !g_enabled; if (g_enabled) { ++g_gen; g_yawRefSet = false; } vrlog::write("F8: VR %s", g_enabled ? "on" : "off"); }
-void forceOff() { if (g_enabled) { g_enabled = false; vrlog::write("VR switched off automatically"); } }
+void notify(const char*) { showText(tr("VR ещё запускается, подождите...", "VR is still starting, please wait..."), 3000); }
+void toggle() {
+    g_enabled = !g_enabled;
+    if (g_enabled) { ++g_gen; g_yawRefSet = false; g_wasRunning = false; g_onTime = GetTickCount64(); g_waitHint = 0; showText(tr("VR включается... Наденьте шлем и смотрите прямо.", "VR is starting... Put the headset on and look straight ahead."), 5000); }
+    else showText(tr("VR выключен. F8 - включить снова.", "VR off. F8 = turn it on again."), 3000);
+    vrlog::write("F8: VR %s", g_enabled ? "on" : "off");
+}
+// called from the render thread: the message is shown by the script thread in tick()
+void forceOff() { if (g_enabled) { g_enabled = false; g_autoOff = true; vrlog::write("VR switched off automatically"); } }
 int generation() { return g_gen; }
-void recenter() { g_yawRefSet = false; vrlog::write("F9: recenter"); }
+void recenter() { g_yawRefSet = false; vrlog::write("F9: recenter"); if (g_enabled) showText(tr("Направление сброшено: \"прямо\" - туда, куда вы смотрите.", "Recentered: straight ahead = where you look now."), 2500); }
 bool enabled() { return g_enabled; }
 
 bool g_inSwitch = false;
@@ -516,8 +514,12 @@ void toggleArms() { g_armsOn = !g_armsOn; vrlog::write("F11: arm IK %s", g_armsO
 
 void tick() {
     if (!natives::ready()) return;
-    if (!onlineGuard() || !g_enabled) { releaseCamera(); return; }
-    if (natives::invoke<int>(N_GET_IS_LOADING_SCREEN_ACTIVE) || natives::invoke<int>(N_IS_PAUSE_MENU_ACTIVE)) { releaseCamera(); return; }
+    bool loading = natives::invoke<int>(N_GET_IS_LOADING_SCREEN_ACTIVE) != 0;
+    if (g_autoOff.exchange(false)) showText(tr("VR выключился из-за ошибки. Проверьте, что SteamVR запущен и шлем подключён, и нажмите F8.", "VR stopped because of an error. Check that SteamVR runs and the headset is connected, then press F8."), 7000);
+    if (!g_hello && !loading && !g_enabled) { g_hello = true; showText(tr("GTA V Hands VR: запустите SteamVR, наденьте шлем и нажмите F8.", "GTA V Hands VR: start SteamVR, put the headset on and press F8."), 7000); }
+    if (!onlineGuard()) { if (g_enabled) { g_enabled = false; showText(tr("GTA Online: VR-мод отключён (только сюжетный режим).", "GTA Online: VR mod switched off (story mode only)."), 5000); } releaseCamera(); return; }
+    if (!g_enabled) { releaseCamera(); return; }
+    if (loading || natives::invoke<int>(N_IS_PAUSE_MENU_ACTIVE)) { releaseCamera(); return; }
     // 0.5.0: character switch (Michael / Franklin / Trevor): the game flies its own sky camera - let it, then take over
     // the new character (camera, head hiding, hands are re-bound to it in hands.cpp)
     if (natives::invoke<int>(N_IS_PLAYER_SWITCH_IN_PROGRESS)) {
@@ -526,7 +528,13 @@ void tick() {
     }
     if (g_inSwitch) { g_inSwitch = false; g_yawRefSet = false; vrlog::write("switch: finished - VR camera on the new character"); }
     VrState s = xr::snapshot();
-    if (!s.running) { releaseCamera(); return; }
+    if (!s.running) {
+        releaseCamera();
+        ULONGLONG now = GetTickCount64();
+        if (now - g_onTime > 8000 && now - g_waitHint > 10000) { g_waitHint = now; showText(tr("Жду шлем... Проверьте, что SteamVR запущен и шлем подключён.", "Waiting for the headset... Check that SteamVR runs and the headset is connected."), 5000); }
+        return;
+    }
+    if (!g_wasRunning) { g_wasRunning = true; showText(tr("VR включён. F8 - выключить, F9 - смотреть прямо.", "VR on. F8 = off, F9 = recenter."), 5000); }
     if (g_lastTick && GetTickCount64() - g_lastTick > 500) g_lastTick = 0;
     int ped = natives::invoke<int>(N_PLAYER_PED_ID);
     bool inVehicle = natives::invoke<int>(N_IS_PED_IN_ANY_VEHICLE, ped, 0) != 0;
@@ -535,7 +543,6 @@ void tick() {
     float yaw = frameYaw(ped, s);
     V anchor = headCamera(ped, s, yaw, inVehicle);
     bodyFollow(ped, s, inVehicle, dt);
-    blit::setVignette(0.f, g_vigInner);   // 0.5.4: no edge darkening
     minimapSource();
     armFollow(ped, s, inVehicle, yaw, anchor);
     { const XrPoseF3* g[2] = {&s.pose[IN_LEFT_GRIP_POSE], &s.pose[IN_RIGHT_GRIP_POSE]}; hands::tick(ped, g, yaw); }

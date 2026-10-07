@@ -1,7 +1,13 @@
 {
  "sheet": "natives",
  "note": "hash = original nativedb hash. Script Hook V maps it to the running game build, so no per-build hashes are needed.",
- "columns": ["name", "hash", "args", "ret", "verified"],
+ "columns": [
+  "name",
+  "hash",
+  "args",
+  "ret",
+  "verified"
+ ],
  "rows": [
   {"name": "PLAYER_PED_ID", "hash": "0xD80958FC74E988A6", "args": "none", "ret": "int", "verified": false},
   {"name": "GET_ENTITY_COORDS", "hash": "0x3FEF770D40960D5A", "args": "int entity, int alive", "ret": "Vector3", "verified": false},
@@ -57,6 +63,13 @@
   {"name": "IS_RADAR_HIDDEN", "hash": "0x157F93B036700462", "args": "none", "ret": "int", "verified": false},
   {"name": "HIDE_HUD_COMPONENT_THIS_FRAME", "hash": "0x6806C51AD12B83B8", "args": "int id", "ret": "void", "verified": false},
   {"name": "DISPLAY_RADAR", "hash": "0xA0EBB943C300E693", "args": "int toggle", "ret": "void", "verified": false},
-  {"name": "IS_PLAYER_SWITCH_IN_PROGRESS", "hash": "0xD9D2CFFF49FAB35F", "args": "none", "ret": "int", "verified": false}
+  {"name": "IS_PLAYER_SWITCH_IN_PROGRESS", "hash": "0xD9D2CFFF49FAB35F", "args": "none", "ret": "int", "verified": false},
+  {"name": "SET_PED_CAN_PLAY_GESTURE_ANIMS", "hash": "0xBAF20C5432058024", "args": "int ped, int toggle", "ret": "void", "verified": false},
+  {"name": "SET_PED_CAN_PLAY_AMBIENT_ANIMS", "hash": "0x6373D1349925A70E", "args": "int ped, int toggle", "ret": "void", "verified": false},
+  {"name": "SET_PED_CAN_PLAY_AMBIENT_BASE_ANIMS", "hash": "0x0EB0585D15254740", "args": "int ped, int toggle", "ret": "void", "verified": false},
+  {"name": "BEGIN_TEXT_COMMAND_PRINT", "hash": "0xB87A37EEB7FAA67D", "args": "const char* gxt", "ret": "void", "verified": false},
+  {"name": "ADD_TEXT_COMPONENT_SUBSTRING_PLAYER_NAME", "hash": "0x6C188BE134E074AA", "args": "const char* text", "ret": "void", "verified": false},
+  {"name": "END_TEXT_COMMAND_PRINT", "hash": "0x9D77056A530643F6", "args": "int duration, int now", "ret": "void", "verified": false},
+  {"name": "GET_CURRENT_LANGUAGE", "hash": "0x2BDD44CC428A7EAE", "args": "none", "ret": "int", "verified": false}
  ]
 }

@@ -17,7 +17,7 @@ HMODULE g_mod = nullptr;
 // so the game is never throttled by the headset before that.
 void onPresent(void* swapChain) {
     bool want = game::enabled();
-    if (want && xr::failed()) { game::forceOff(); want = false; }
+    if (want && xr::failed()) { game::forceOff(); want = false; }   // the message is shown by the script thread
     xr::setWanted(want);   // F8: starts / stops GTA5VR_Host.exe, which runs OpenXR outside the game process
     if (!want) return;
     auto* sw = static_cast<IDXGISwapChain*>(swapChain);
@@ -49,26 +49,23 @@ bool keyHit(int vk) {
 }
 
 void scriptMain() {
-    vrlog::write("script thread started (SHV game version id %d); F8 toggles VR, F9 recenters, F10 test pattern, F11 arms on/off, F12 hand rotation on/off", shv::gameVersion());
+    vrlog::write("script thread started (SHV game version id %d); F8 = VR on/off, F9 = look straight ahead", shv::gameVersion());
     ULONGLONG onAt = 0;
     for (;;) {
         if (keyHit(kToggleVk)) {
             ULONGLONG now = GetTickCount64();
             // while the helper is still connecting to SteamVR (can take 10-30 s) a second F8 within 3 s is ignored
-            if (game::enabled() && now - onAt < 3000) vrlog::write("F8 ignored: VR is still starting (wait, the helper connects to SteamVR)");
+            if (game::enabled() && now - onAt < 3000) { vrlog::write("F8 ignored: VR is still starting"); game::notify(nullptr); }
             else { game::toggle(); if (game::enabled()) onAt = now; }
         }
         if (keyHit(VK_F9)) game::recenter();
-        if (keyHit(VK_F10)) xr::toggleTestPattern();
-        if (keyHit(VK_F11)) game::toggleArms();
-        if (keyHit(VK_F12)) hands::toggle();
         game::tick();
         shv::wait(0);
     }
 }
 
 DWORD WINAPI boot(LPVOID) {
-    vrlog::write("GTA5VR 0.5.4 loading (Script Hook V build, story mode only)");
+    vrlog::write("GTA5VR 0.6.0 loading (Script Hook V build, story mode only)");
     // SHV may be loaded after us by the ASI loader: retry for ~30 s.
     bool ok = false;
     for (int i = 0; i < 60 && !(ok = natives::init()); ++i) Sleep(500);
