@@ -7,7 +7,7 @@ VR mod for GTA V Legacy story mode: head-tracked first-person view, your charact
 1. Скачайте **setup.bat** со страницы [Releases → latest](https://github.com/ctenadog/gta5-hands-vr/releases/tag/latest) и запустите.
 2. Запустите SteamVR, затем GTA V в сюжетном режиме, нажмите **F8**.
 
-F8 включает и выключает VR, F9 делает «смотреть прямо». Подсказки показываются в игре. Подробно: [README_RU.txt](README_RU.txt). Удалить мод: **uninstall.bat**.
+F8 включает и выключает VR, F9 делает «смотреть прямо». Подсказки показываются в игре. Подробно: [README_RU.txt](README_RU.txt). Обновить: **update.bat** (сам скачает новую версию). Удалить мод: **uninstall.bat**.
 
 Не скачивайте «Code → Download ZIP» и «Source code»: это исходники, а не мод.
 

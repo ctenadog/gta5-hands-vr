@@ -61,6 +61,8 @@ foreach ($f in 'openxr_loader.dll','GTA5VR_Host.exe','xrtest.exe','xrtest.log','
                'GTA5VR.log','GTA5VR.old.log','GTA5VR_Host.log','GTA5VR_Host.old.log',
                'GTA5VR-README.txt','README_RU.txt','install.bat','install.ps1','steamxr_win64.json') { Remove-Old (Join-Path $game $f) }
 Remove-Old (Join-Path $game 'GTA5VR')
+Remove-Old (Join-Path $game 'GTA5VR_backup')
+Remove-Item (Join-Path $env:TEMP 'GTA5VR-update') -Recurse -Force -ErrorAction SilentlyContinue
 $lic = Join-Path $game 'licenses'
 if ((Test-Path (Join-Path $lic 'OpenXR-Loader-LICENSE.txt')) -and ((Get-ChildItem $lic -Force | Measure-Object).Count -eq 1)) { Remove-Old $lic }
 if ($here -ne $game) { Remove-Old (Join-Path $game 'setup.bat') }
