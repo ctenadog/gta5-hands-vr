@@ -9,7 +9,7 @@
 
 namespace bridge {
 constexpr uint32_t kMagic = 0x47355652u;   // "G5VR"
-constexpr uint32_t kVersion = 2;
+constexpr uint32_t kVersion = 3;   // 0.6.4: two more controller inputs (menu, phone)
 enum Method : int32_t { M_NONE = 0, M_LEGACY = 1, M_NTNAME = 2, M_CPU = 3, M_END = 4 };
 enum HostState : int32_t { H_STARTING = 0, H_READY = 1, H_RUNNING = 2, H_EXITED = 8, H_FATAL = 9 };
 constexpr uint32_t kFrameHdr = 256;        // CPU path: header size before the pixels in the frame mapping
@@ -38,5 +38,4 @@ struct Shm {
 };
 
 inline void shmName(DWORD pid, wchar_t* buf, size_t n) { swprintf(buf, n, L"Local\\GTA5VR_shm_%lu", (unsigned long)pid); }
-inline bool poseOk(const float* p) { float n = p[0]*p[0] + p[1]*p[1] + p[2]*p[2] + p[3]*p[3]; return n > 0.9f && n < 1.1f; }
 }

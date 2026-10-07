@@ -16,6 +16,8 @@
   {"action": "sprint", "xr_type": "bool", "path_pico4": "/user/hand/left/input/thumbstick/click", "path_touch": "/user/hand/left/input/thumbstick/click", "game_control": "INPUT_SPRINT", "game_control_vehicle": "-", "axis": "-", "verified": false},
   {"action": "turn_x", "xr_type": "float", "path_pico4": "/user/hand/right/input/thumbstick/x", "path_touch": "/user/hand/right/input/thumbstick/x", "game_control": "-", "game_control_vehicle": "-", "axis": "x", "verified": false},
   {"action": "next_weapon", "xr_type": "bool", "path_pico4": "/user/hand/left/input/y/click", "path_touch": "/user/hand/left/input/y/click", "game_control": "-", "game_control_vehicle": "-", "axis": "-", "verified": false},
-  {"action": "holster", "xr_type": "bool", "path_pico4": "/user/hand/right/input/thumbstick/click", "path_touch": "/user/hand/right/input/thumbstick/click", "game_control": "-", "game_control_vehicle": "-", "axis": "-", "verified": false}
+  {"action": "holster", "xr_type": "bool", "path_pico4": "/user/hand/right/input/thumbstick/click", "path_touch": "/user/hand/right/input/thumbstick/click", "game_control": "-", "game_control_vehicle": "-", "axis": "-", "verified": false},
+  {"action": "menu", "xr_type": "bool", "path_pico4": "/user/hand/left/input/menu/click", "path_touch": "/user/hand/left/input/menu/click", "game_control": "-", "game_control_vehicle": "-", "axis": "-", "verified": false, "note": "0.6.4: pause menu open/close (handled in game.cpp)"},
+  {"action": "phone", "xr_type": "float", "path_pico4": "/user/hand/left/input/squeeze/value", "path_touch": "/user/hand/left/input/squeeze/value", "game_control": "-", "game_control_vehicle": "-", "axis": "-", "verified": false, "note": "0.6.4: left grip = take out / put away the phone (handled in game.cpp)"}
  ]
 }
