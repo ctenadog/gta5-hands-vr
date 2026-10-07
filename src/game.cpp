@@ -505,7 +505,7 @@ void releaseCamera() {
 }
 
 namespace game {
-void toggle() { g_enabled = !g_enabled; if (g_enabled) { ++g_gen; g_yawRefSet = false; } vrlog::write("F8: VR on", g_enabled ? "on" : "off"); }
+void toggle() { g_enabled = !g_enabled; if (g_enabled) { ++g_gen; g_yawRefSet = false; } vrlog::write("F8: VR %s", g_enabled ? "on" : "off"); }
 void forceOff() { if (g_enabled) { g_enabled = false; vrlog::write("VR switched off automatically"); } }
 int generation() { return g_gen; }
 void recenter() { g_yawRefSet = false; vrlog::write("F9: recenter"); }
