@@ -182,40 +182,8 @@ uintptr_t resolve(uintptr_t ped) {
     return p;
 }
 
-void search(int ped, uintptr_t pedAddr) {
-    g_searched = true; g_pageOk.clear();
-    M3 E; float epos[3];
-    if (!entityMatrix(pedAddr, E, epos)) { vrlog::write("hands: ped object not readable"); return; }
-    Vector3 c = natives::invokeV3(N_GET_ENTITY_COORDS, ped, 1);
-    vrlog::write("hands: ped object %p, entity matrix pos (%.2f %.2f %.2f) vs game coords (%.2f %.2f %.2f)", (void*)pedAddr, epos[0], epos[1], epos[2], c.x, c.y, c.z);
-    if (fabsf(epos[0] - c.x) > 0.5f || fabsf(epos[1] - c.y) > 0.5f) { vrlog::write("hands: entity matrix offset 0x60 does not match - stop"); return; }
-    std::vector<Bone> bones;
-    for (int id : kBoneIds) {
-        Bone b{}; b.id = id; b.index = natives::invoke<int>(N_GET_PED_BONE_INDEX, ped, id);
-        if (b.index < 0 || b.index > 300) { vrlog::write("hands: bone %d index %d - stop", id, b.index); return; }
-        Vector3 w = natives::invokeV3(N_GET_WORLD_POSITION_OF_ENTITY_BONE, ped, b.index);
-        b.world[0] = w.x; b.world[1] = w.y; b.world[2] = w.z;
-        float d[3] = {w.x - epos[0], w.y - epos[1], w.z - epos[2]};
-        for (int i = 0; i < 3; ++i) b.obj[i] = E.m[0][i] * d[0] + E.m[1][i] * d[1] + E.m[2][i] * d[2];   // E^T * d
-        vrlog::write("hands: bone %d index %d world (%.2f %.2f %.2f) object (%.3f %.3f %.3f)", id, b.index, w.x, w.y, w.z, b.obj[0], b.obj[1], b.obj[2]);
-        bones.push_back(b);
-    }
-    g_handIdx[0] = bones[0].index; g_handIdx[1] = bones[1].index;
-    ULONGLONG t0 = GetTickCount64(); int tested = 0;
-    for (int world = 0; world < 2 && !g_found; ++world)
-    for (int o0 = 0; o0 < 0x1400 && !g_found; o0 += 8) {
-        uintptr_t p1; if (!rdPtr(pedAddr + o0, p1)) continue;
-        ++tested; if (matchArray(p1, bones, world)) { g_depth = 1; g_offs[0] = o0; g_found = true; g_worldSpace = world; break; }
-        for (int o1 = 0; o1 < 0x100 && !g_found; o1 += 8) {
-            uintptr_t p2; if (!rdPtr(p1 + o1, p2)) continue;
-            ++tested; if (matchArray(p2, bones, world)) { g_depth = 2; g_offs[0] = o0; g_offs[1] = o1; g_found = true; g_worldSpace = world; break; }
-            for (int o2 = 0; o2 < 0x60; o2 += 8) {
-                uintptr_t p3; if (!rdPtr(p2 + o2, p3)) continue;
-                ++tested; if (matchArray(p3, bones, world)) { g_depth = 3; g_offs[0] = o0; g_offs[1] = o1; g_offs[2] = o2; g_found = true; g_worldSpace = world; break; }
-            }
-        }
-    }
-    if (g_found) {
+// bone indices / head bones / finger bones of THIS ped (0.5.0: also called again after a character switch)
+void buildLists(int ped, uintptr_t pedAddr, const M3& E, const std::vector<Bone>& bones, int tested, unsigned long long ms) {
         uintptr_t arr = resolve(pedAddr);
         int count = natives::invoke<int>(N_GET_ENTITY_BONE_COUNT, ped);
         if (count <= 0 || count > 400) count = 200;
@@ -260,8 +228,75 @@ void search(int ped, uintptr_t pedAddr) {
         char path[96]; snprintf(path, sizeof(path), "ped+0x%X", g_offs[0]);
         for (int d = 1; d < g_depth; ++d) { size_t l = strlen(path); snprintf(path + l, sizeof(path) - l, " ->+0x%X", g_offs[d]); }
         vrlog::write("hands: FOUND bone matrices (%s space) at %s, %d candidates, %llu ms. (F12 = hand rotation)",
-            g_worldSpace ? "world" : "object", path, tested, GetTickCount64() - t0);
+            g_worldSpace ? "world" : "object", path, tested, ms);
+}
+
+// 0.5.0: per-ped bone list + known path
+int g_ped = 0; int g_reSearch = 0;
+bool collectBones(int ped, uintptr_t pedAddr, M3& E, std::vector<Bone>& bones) {
+    float epos[3];
+    if (!entityMatrix(pedAddr, E, epos)) return false;
+    for (int id : kBoneIds) {
+        Bone b{}; b.id = id; b.index = natives::invoke<int>(N_GET_PED_BONE_INDEX, ped, id);
+        if (b.index < 0 || b.index > 300) return false;
+        Vector3 w = natives::invokeV3(N_GET_WORLD_POSITION_OF_ENTITY_BONE, ped, b.index);
+        b.world[0] = w.x; b.world[1] = w.y; b.world[2] = w.z;
+        float d[3] = {w.x - epos[0], w.y - epos[1], w.z - epos[2]};
+        for (int i = 0; i < 3; ++i) b.obj[i] = E.m[0][i] * d[0] + E.m[1][i] * d[1] + E.m[2][i] * d[2];
+        bones.push_back(b);
     }
+    return true;
+}
+// After a character switch (Michael / Franklin / Trevor / animal...) the skeleton lives at the same pointer path, but
+// bone indices, head bones and fingers differ per model. Try the known path first (no 1 s pause), else full search.
+bool rebind(int ped, uintptr_t pedAddr) {
+    if (g_depth <= 0) return false;
+    M3 E; std::vector<Bone> bones;
+    if (!collectBones(ped, pedAddr, E, bones)) { vrlog::write("hands: new character - bones not readable yet"); return false; }
+    uintptr_t arr = resolve(pedAddr);
+    if (!arr || !matchArray(arr, bones, g_worldSpace)) { vrlog::write("hands: new character - known skeleton path does not match"); return false; }
+    g_handIdx[0] = bones[0].index; g_handIdx[1] = bones[1].index;
+    g_kIdx[0] = g_kIdx[1] = g_kMid[0] = g_kMid[1] = g_kPinky[0] = g_kPinky[1] = -1;
+    buildLists(ped, pedAddr, E, bones, 0, 0);
+    vrlog::write("hands: new character - skeleton re-used (head bone %d, hands %d/%d)", g_headIdx, g_handIdx[0], g_handIdx[1]);
+    return true;
+}
+
+void search(int ped, uintptr_t pedAddr) {
+    g_searched = true; g_pageOk.clear();
+    M3 E; float epos[3];
+    if (!entityMatrix(pedAddr, E, epos)) { vrlog::write("hands: ped object not readable"); return; }
+    Vector3 c = natives::invokeV3(N_GET_ENTITY_COORDS, ped, 1);
+    vrlog::write("hands: ped object %p, entity matrix pos (%.2f %.2f %.2f) vs game coords (%.2f %.2f %.2f)", (void*)pedAddr, epos[0], epos[1], epos[2], c.x, c.y, c.z);
+    if (fabsf(epos[0] - c.x) > 0.5f || fabsf(epos[1] - c.y) > 0.5f) { vrlog::write("hands: entity matrix offset 0x60 does not match - stop"); return; }
+    std::vector<Bone> bones;
+    for (int id : kBoneIds) {
+        Bone b{}; b.id = id; b.index = natives::invoke<int>(N_GET_PED_BONE_INDEX, ped, id);
+        if (b.index < 0 || b.index > 300) { vrlog::write("hands: bone %d index %d - stop", id, b.index); return; }
+        Vector3 w = natives::invokeV3(N_GET_WORLD_POSITION_OF_ENTITY_BONE, ped, b.index);
+        b.world[0] = w.x; b.world[1] = w.y; b.world[2] = w.z;
+        float d[3] = {w.x - epos[0], w.y - epos[1], w.z - epos[2]};
+        for (int i = 0; i < 3; ++i) b.obj[i] = E.m[0][i] * d[0] + E.m[1][i] * d[1] + E.m[2][i] * d[2];   // E^T * d
+        vrlog::write("hands: bone %d index %d world (%.2f %.2f %.2f) object (%.3f %.3f %.3f)", id, b.index, w.x, w.y, w.z, b.obj[0], b.obj[1], b.obj[2]);
+        bones.push_back(b);
+    }
+    g_handIdx[0] = bones[0].index; g_handIdx[1] = bones[1].index;
+    g_kIdx[0] = g_kIdx[1] = g_kMid[0] = g_kMid[1] = g_kPinky[0] = g_kPinky[1] = -1;
+    ULONGLONG t0 = GetTickCount64(); int tested = 0;
+    for (int world = 0; world < 2 && !g_found; ++world)
+    for (int o0 = 0; o0 < 0x1400 && !g_found; o0 += 8) {
+        uintptr_t p1; if (!rdPtr(pedAddr + o0, p1)) continue;
+        ++tested; if (matchArray(p1, bones, world)) { g_depth = 1; g_offs[0] = o0; g_found = true; g_worldSpace = world; break; }
+        for (int o1 = 0; o1 < 0x100 && !g_found; o1 += 8) {
+            uintptr_t p2; if (!rdPtr(p1 + o1, p2)) continue;
+            ++tested; if (matchArray(p2, bones, world)) { g_depth = 2; g_offs[0] = o0; g_offs[1] = o1; g_found = true; g_worldSpace = world; break; }
+            for (int o2 = 0; o2 < 0x60; o2 += 8) {
+                uintptr_t p3; if (!rdPtr(p2 + o2, p3)) continue;
+                ++tested; if (matchArray(p3, bones, world)) { g_depth = 3; g_offs[0] = o0; g_offs[1] = o1; g_offs[2] = o2; g_found = true; g_worldSpace = world; break; }
+            }
+        }
+    }
+    if (g_found) buildLists(ped, pedAddr, E, bones, tested, GetTickCount64() - t0);
     else vrlog::write("hands: bone matrices NOT found (%d candidates, %llu ms) - send this log", tested, GetTickCount64() - t0);
 }
 }
@@ -302,6 +337,18 @@ void tick(int ped, const XrPoseF3* gripLeftRight[2], float yawDeg) {
         g_rollOff = (int)GetPrivateProfileIntA("vr", "hand_roll", 0, d.c_str()) * 0.0174533f;
         vrlog::write("hands: GTA5VR.ini hand_rotation=%d hand_flip=%d hand_pitch=%.0f hand_yaw=%.0f hand_roll=%.0f", g_rotIni, g_flip, g_pitchOff * 57.3f, g_yawOff * 57.3f, g_rollOff * 57.3f);
     }
+    if (ped != g_ped) {   // 0.5.0: character switch (or first frame)
+        bool first = g_ped == 0; g_ped = ped;
+        g_wArr = 0; { std::lock_guard<std::mutex> l(g_wMtx); g_wHave[0] = g_wHave[1] = false; g_headBones.clear(); }
+        g_lastSet[0] = g_lastSet[1] = false; g_reSearch = 0; g_autoSearch = 0;
+        Sleep(2);   // let the writer thread finish a pass on the old skeleton before the indices change
+        if (!first) {
+            vrlog::write("hands: character changed (ped %d)", ped);
+            bool wasOn = g_on;
+            if (g_found && pedAddr && rebind(ped, pedAddr)) { g_on = wasOn; }
+            else { g_found = false; g_searched = false; g_on = false; if (g_hide.load() || g_rotIni == 1) g_wantSearch = true; }
+        }
+    }
     if (g_rotIni == 1 && !g_userOff && !g_searched && !g_wantSearch && g_autoSearch < 3) { ++g_autoSearch; g_wantSearch = true; vrlog::write("hands: searching the skeleton for hand rotation (game may pause ~1 s)"); }
     if (g_rotIni == 1 && !g_userOff && g_found && !g_on) { g_on = true; g_lastSet[0] = g_lastSet[1] = false; vrlog::write("hands: hand rotation ON (F12 = off)"); }
     if (g_on && !g_wThread) g_wThread = CreateThread(nullptr, 0, writer, nullptr, 0, nullptr);
@@ -325,7 +372,7 @@ void tick(int ped, const XrPoseF3* gripLeftRight[2], float yawDeg) {
         const float* f = (const float*)m;
         for (int i = 0; i < 3; ++i) if (!(fabsf(f[12 + i] - want[i]) < 0.15f)) {
             g_wArr = 0; vrlog::write("hands: head bone check failed (%.2f vs %.2f) - will search again", f[12 + i], want[i]);
-            static int re = 0; g_found = false; g_searched = false; g_on = false; if (g_hide.load() && ++re <= 3) g_wantSearch = true; return;
+            g_found = false; g_searched = false; g_on = false; if ((g_hide.load() || g_rotIni == 1) && ++g_reSearch <= 3) g_wantSearch = true; return;
         }
     }
     if (!g_on) { g_wArr = arr; g_wBeat = GetTickCount64(); return; }   // head hiding only
