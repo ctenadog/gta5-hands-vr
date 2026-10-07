@@ -70,6 +70,7 @@
   {"name": "BEGIN_TEXT_COMMAND_PRINT", "hash": "0xB87A37EEB7FAA67D", "args": "const char* gxt", "ret": "void", "verified": false},
   {"name": "ADD_TEXT_COMPONENT_SUBSTRING_PLAYER_NAME", "hash": "0x6C188BE134E074AA", "args": "const char* text", "ret": "void", "verified": false},
   {"name": "END_TEXT_COMMAND_PRINT", "hash": "0x9D77056A530643F6", "args": "int duration, int now", "ret": "void", "verified": false},
-  {"name": "GET_CURRENT_LANGUAGE", "hash": "0x2BDD44CC428A7EAE", "args": "none", "ret": "int", "verified": false}
+  {"name": "GET_CURRENT_LANGUAGE", "hash": "0x2BDD44CC428A7EAE", "args": "none", "ret": "int", "verified": false},
+  {"name": "SET_PED_RESET_FLAG", "hash": "0xC1E8A365BF3B29F2", "args": "int ped, int flagId, int value", "ret": "void", "verified": false}
  ]
 }

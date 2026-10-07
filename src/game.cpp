@@ -545,6 +545,9 @@ void tick() {
     bodyFollow(ped, s, inVehicle, dt);
     minimapSource();
     armFollow(ped, s, inVehicle, yaw, anchor);
+    // 0.6.2: the game pulls the free (left) hand onto the gun grip for a two-handed hold - in VR each hand belongs to its
+    // own controller. Reset flags last one frame, so it is set every frame. CPED_RESET_FLAG_CancelLeftHandGripIk = 324.
+    if (!inVehicle) natives::invoke(N_SET_PED_RESET_FLAG, ped, 324, 1);
     { const XrPoseF3* g[2] = {&s.pose[IN_LEFT_GRIP_POSE], &s.pose[IN_RIGHT_GRIP_POSE]}; hands::tick(ped, g, yaw); }
     hideHead(ped);
     weaponAim(ped, s, inVehicle, yaw, anchor);
