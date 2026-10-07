@@ -28,4 +28,4 @@ jobs:
         run: |
           gh release delete latest -y --cleanup-tag || true
           sleep 5
-          gh release create latest build/GTA5VR-*.zip install/setup.bat install/uninstall.bat --title "GTA V Hands VR (latest)" --notes "Установка: скачайте setup.bat и запустите. Затем SteamVR -> GTA V (сюжет) -> F8. Удаление: uninstall.bat. / Install: download setup.bat and run it, then SteamVR -> GTA V story mode -> F8. Story mode only, DEV build." --prerelease
+          gh release create latest build/GTA5VR-*.zip build/version.txt build/setup.bat install/uninstall.bat --title "GTA V Hands VR (latest)" --notes "Установка: скачайте setup.bat и запустите. Затем SteamVR -> GTA V (сюжет) -> F8. Мод сам проверяет и ставит обновления. Удаление: uninstall.bat. / Install: download setup.bat and run it, then SteamVR -> GTA V story mode -> F8. Story mode only, DEV build." --prerelease

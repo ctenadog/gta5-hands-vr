@@ -18,7 +18,12 @@ $RelPage = 'https://github.com/ctenadog/gta5-hands-vr/releases/tag/latest'
 $ShvPage = 'https://www.dev-c.com/gtav/scripthookv/'
 $ModFiles = 'GTA5VR.asi','GTA5VR_Host.exe','openxr_loader.dll'
 
+# версия установщика = версия мода; CI подставляет её при сборке (строка ниже)
+$SetupVer = '0.0.0'
+$BaseUrl = 'https://github.com/ctenadog/gta5-hands-vr/releases/download/latest/'
+
 function Say($t) { Write-Host "  $t" }
+function VerNum($v) { try { [version]($v.Trim()) } catch { [version]'0.0.0' } }
 function Step($n, $t) { Write-Host ''; Write-Host "[$n/4] $t" -ForegroundColor Cyan }
 function Ok($p) { $p -and (Test-Path (Join-Path $p 'GTA5.exe')) }
 
@@ -27,6 +32,26 @@ Write-Host '  GTA V Hands VR - установка' -ForegroundColor Green
 Write-Host '  Ничего нажимать не нужно, пока скрипт сам не попросит.'
 
 try {
+# ---------- 0. Обновления ----------
+$latest = $null
+try { $latest = (Invoke-WebRequest -Uri ($BaseUrl + 'version.txt?t=' + [DateTime]::Now.Ticks) -UserAgent $UA -UseBasicParsing -TimeoutSec 15).Content.Trim() } catch {}
+if ($latest -and (VerNum $latest) -gt (VerNum $SetupVer) -and -not $env:GTA5VR_UPDATED) {
+  Write-Host ''
+  Write-Host "  Есть новая версия $latest - обновляю установщик..." -ForegroundColor Yellow
+  try {
+    $new = Join-Path $env:TEMP 'GTA5VR-setup-new.bat'
+    Invoke-WebRequest -Uri ($BaseUrl + 'setup.bat?t=' + [DateTime]::Now.Ticks) -OutFile $new -UserAgent $UA -UseBasicParsing -TimeoutSec 60
+    if ((Get-Item $new).Length -gt 5000 -and (Get-Content $new -Raw -Encoding UTF8).Contains('#PSSTART')) {
+      if ($env:GTA5VR_SELF) { Copy-Item $new $env:GTA5VR_SELF -Force -ErrorAction SilentlyContinue }
+      $env:GTA5VR_UPDATED = '1'
+      $env:GTA5VR_SELF = $new
+      $t = [IO.File]::ReadAllText($new, [Text.Encoding]::UTF8)
+      Invoke-Expression $t.Substring($t.IndexOf('#PS' + 'START'))
+      return
+    }
+  } catch { Say 'Не получилось обновить установщик - продолжаю с этой версией.' }
+}
+
 # ---------- 1. Игра ----------
 Step 1 'Ищу GTA V'
 $cands = @()
@@ -51,6 +76,18 @@ while (-not $game) {
 }
 $game = (Resolve-Path $game).Path
 Say "Нашёл: $game"
+$instVer = $null
+$glog = Join-Path $game 'GTA5VR.log'
+if (Test-Path (Join-Path $game 'GTA5VR.asi')) {
+  $m = [regex]::Match([Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes((Join-Path $game 'GTA5VR.asi'))), 'GTA5VR (\d+\.\d+\.\d+) loading')
+  if ($m.Success) { $instVer = $m.Groups[1].Value }
+}
+if ($instVer) { Say "Установлен мод версии $instVer$(if ($latest) { ", последняя на GitHub: $latest" })" }
+if ($instVer -and $latest -and (VerNum $instVer) -ge (VerNum $latest)) {
+  Write-Host '  У вас уже последняя версия.' -ForegroundColor Green
+  $a = Read-Host '  Переустановить всё равно? (y = да, Enter = выйти)'
+  if ($a -ne 'y') { return }
+}
 $procs = 'GTA5','GTAVLauncher','PlayGTAV','GTA5VR_Host','xrtest'
 if (Get-Process -Name $procs -ErrorAction SilentlyContinue) {
   Say 'Игра сейчас запущена - её нужно закрыть.'
@@ -142,7 +179,7 @@ Step 4 'Ставлю мод в папку игры'
 function Remove-Old($p) { if (Test-Path -LiteralPath $p) { Remove-Item -LiteralPath $p -Recurse -Force -ErrorAction SilentlyContinue } }
 # старые версии и мусор от прошлых установок
 foreach ($d in (Join-Path $game 'scripts'), (Join-Path $game 'plugins'), (Join-Path $game 'asi')) { Remove-Old (Join-Path $d 'GTA5VR.asi') }
-foreach ($f in 'xrtest.exe','xrtest.log','GTA5VR.old.log','GTA5VR_Host.old.log','GTA5VR-README.txt','README_RU.txt','install.bat','install.ps1','steamxr_win64.json','GTA5VR') { Remove-Old (Join-Path $game $f) }
+foreach ($f in 'xrtest.exe','xrtest.log','GTA5VR.old.log','GTA5VR_Host.old.log','GTA5VR-README.txt','README_RU.txt','install.bat','install.ps1','steamxr_win64.json','GTA5VR','GTA5VR_update.log') { Remove-Old (Join-Path $game $f) }
 $lic = Join-Path $game 'licenses'
 if ((Test-Path (Join-Path $lic 'OpenXR-Loader-LICENSE.txt')) -and ((Get-ChildItem $lic -Force | Measure-Object).Count -eq 1)) { Remove-Old $lic }
 if ($here -ne $game) { Remove-Old (Join-Path $game 'setup.bat') }
@@ -168,6 +205,7 @@ Write-Host '  Управление: левый стик - ходить (нажа
 Write-Host '  правый курок - стрелять / газ, левый курок - целиться / тормоз,'
 Write-Host '  A - прыжок, B - сесть в машину / выйти, X - перезарядка, Y - сменить оружие.'
 Write-Host ''
+Write-Host '  Мод сам проверяет обновления при запуске игры и ставит их после выхода из неё.'
 Write-Host '  Только сюжетный режим, не GTA Online. Удалить мод: uninstall.bat'
 Write-Host "  Если что-то не работает - пришлите файлы GTA5VR.log и GTA5VR_Host.log из папки игры."
 } catch {

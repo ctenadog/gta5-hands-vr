@@ -8,6 +8,8 @@
 #include "game.h"
 #include "log.h"
 #include "hands.h"
+#include "update.h"
+#include "version.h"
 
 namespace {
 HMODULE g_mod = nullptr;
@@ -65,7 +67,8 @@ void scriptMain() {
 }
 
 DWORD WINAPI boot(LPVOID) {
-    vrlog::write("GTA5VR 0.6.2 loading (Script Hook V build, story mode only)");
+    vrlog::write("GTA5VR " GTA5VR_VERSION " loading (Script Hook V build, story mode only)");
+    update::start();
     // SHV may be loaded after us by the ASI loader: retry for ~30 s.
     bool ok = false;
     for (int i = 0; i < 60 && !(ok = natives::init()); ++i) Sleep(500);
