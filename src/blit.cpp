@@ -16,7 +16,14 @@ ID3D11SamplerState* g_smp = nullptr; ID3D11Buffer* g_cb = nullptr;
 ID3D11RasterizerState* g_rs = nullptr; ID3D11BlendState* g_bs = nullptr; ID3D11DepthStencilState* g_ds = nullptr;
 ID3D11Texture2D* g_tmp = nullptr; ID3D11ShaderResourceView* g_srv = nullptr; D3D11_TEXTURE2D_DESC g_tmpDesc{};
 bool g_ok = false;
-float g_mm[8] = {0,0,0,0,-1,-1,-1,-1};   // 0.4.9 minimap overlay: source rect (backbuffer uv), dest rect (eye uv), dest x<0 = off
+float g_mm[8] = {0.f,0.806f,0.147f,1.f,-1,-1,-1,-1};   // minimap overlay: source rect (backbuffer uv), dest rect (eye uv), dest x<0 = off
+// 0.5.0: destination anchor (x, y, height in eye uv) + on flag; the source rect comes from the game (real radar position)
+float g_mmDst[3] = {0.20f, 0.66f, 0.22f}; bool g_mmOn = true;
+void mmRecalc(float srcAspect) {   // srcAspect = radar width / height in pixels
+    float w = g_mmDst[2] * srcAspect; if (w > 0.6f) w = 0.6f;
+    float x1 = g_mmDst[0] + w, y1 = g_mmDst[1] + g_mmDst[2];
+    g_mm[4] = g_mmOn ? g_mmDst[0] : -1.f; g_mm[5] = g_mmDst[1]; g_mm[6] = x1 > 1.f ? 1.f : x1; g_mm[7] = y1 > 1.f ? 1.f : y1;
+}
 
 const char* kHlsl =
 "cbuffer C : register(b0) { float4 p; float4 m; float4 d; };\n"
@@ -95,12 +102,10 @@ bool draw(ID3D11DeviceContext* ctx, ID3D11Texture2D* bb, ID3D11Texture2D* eyeTex
     // centre crop: the game camera's vertical fov = eye fov, so take a slice of width height*eyeAspect
     float sx = (float)bd.Height * eyeAspect / (float)bd.Width; if (sx > 1.f) sx = 1.f;
     float cb[12] = {sx, 0.5f - 0.5f * sx, linearize ? 1.f : 0.f, testPattern ? 1.f : 0.f};
-    // minimap: the radar sits in the bottom-left corner of the 16:9 frame, which the centre crop cuts away.
-    // Its source width is given for 16:9 and rescaled to the real backbuffer aspect.
+    // minimap: the radar sits in the bottom-left corner of the frame, which the centre crop cuts away; it is copied
+    // into the visible part. 0.5.0: the source rect is the radar's real place (from the game), not a 16:9 guess.
     if (g_mm[4] >= 0.f) {
-        float k = (16.f / 9.f) / ((float)bd.Width / (float)bd.Height);
-        cb[4] = g_mm[0] * k; cb[5] = g_mm[1]; cb[6] = g_mm[2] * k; cb[7] = g_mm[3];
-        for (int i = 0; i < 4; ++i) cb[8 + i] = g_mm[4 + i];
+        for (int i = 0; i < 4; ++i) { cb[4 + i] = g_mm[i]; cb[8 + i] = g_mm[4 + i]; }
     } else { cb[8] = cb[9] = cb[10] = cb[11] = -1.f; }
 
     ID3D11DeviceContext1* c1 = nullptr; ctx->QueryInterface(__uuidof(ID3D11DeviceContext1), (void**)&c1);
@@ -124,7 +129,13 @@ bool draw(ID3D11DeviceContext* ctx, ID3D11Texture2D* bb, ID3D11Texture2D* eyeTex
 }
 
 void reset() { rel(g_srv); rel(g_tmp); }
-void setMinimap(bool on, float sx0, float sy0, float sx1, float sy1, float dx0, float dy0, float dx1, float dy1) {
-    float v[8] = {sx0, sy0, sx1, sy1, on ? dx0 : -1.f, dy0, dx1, dy1}; memcpy(g_mm, v, sizeof v);
+void setMinimap(bool on, float dx, float dy, float size) {
+    g_mmOn = on; g_mmDst[0] = dx; g_mmDst[1] = dy; g_mmDst[2] = size;
+    float a = (g_mm[3] > g_mm[1]) ? (g_mm[2] - g_mm[0]) * (16.f / 9.f) / (g_mm[3] - g_mm[1]) : 1.2f;
+    mmRecalc(a);
+}
+void setMinimapSource(float sx0, float sy0, float sx1, float sy1, float screenAspect) {
+    g_mm[0] = sx0; g_mm[1] = sy0; g_mm[2] = sx1; g_mm[3] = sy1;
+    mmRecalc((sx1 - sx0) * screenAspect / (sy1 - sy0));
 }
 }
