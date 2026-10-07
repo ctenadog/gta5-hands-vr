@@ -73,11 +73,20 @@ bool onlineGuard() {
 // 0.4.5 camera settings (GTA5VR.ini [vr]): eye_up / eye_forward in cm above / in front of the neck bone,
 // head_smooth = how much of the neck movement follows per frame in % (lower = calmer, more lag), car_hard_attach.
 float g_eyeUp = 0.12f, g_eyeFwd = 0.12f, g_smooth = 0.25f; bool g_carHard = true; bool g_camIniRead = false;
+// 0.5.3 comfort: head_bob=0 (default) keeps the on-foot camera steady instead of following every step / sprint lean of
+// the neck bone (the 0.5.1 log: neck forward offset jumped 0 -> 0.28 m while running = the view rocks back and forth).
+// comfort_vignette = 0..100 % darkening of the image edges while moving / turning, vignette_size = inner radius %.
+int g_headBob = 0; float g_vigMax = 0.6f, g_vigInner = 0.55f, g_vigCur = 0.f; bool g_onFoot = true;
 void readCamIni() {
     if (g_camIniRead) return; g_camIniRead = true;
     char m[MAX_PATH]; GetModuleFileNameA(nullptr, m, MAX_PATH); std::string d = m; d = d.substr(0, d.find_last_of("\\/") + 1) + "GTA5VR.ini";
     auto def = [&](const char* k, const char* v) { if (GetPrivateProfileIntA("vr", k, -12345, d.c_str()) == -12345) WritePrivateProfileStringA("vr", k, v, d.c_str()); };
     def("eye_up", "12"); def("eye_forward", "12"); def("head_smooth", "25"); def("car_hard_attach", "1");
+    def("head_bob", "0"); def("comfort_vignette", "60"); def("vignette_size", "55");
+    g_headBob = GetPrivateProfileIntA("vr", "head_bob", 0, d.c_str()) != 0;
+    g_vigMax = std::max(0, std::min(100, (int)GetPrivateProfileIntA("vr", "comfort_vignette", 60, d.c_str()))) / 100.f;
+    g_vigInner = std::max(20, std::min(95, (int)GetPrivateProfileIntA("vr", "vignette_size", 55, d.c_str()))) / 100.f;
+    vrlog::write("comfort: GTA5VR.ini head_bob=%d comfort_vignette=%.0f%% vignette_size=%.0f%%", g_headBob, g_vigMax * 100, g_vigInner * 100);
     g_eyeUp  = (int)GetPrivateProfileIntA("vr", "eye_up", 12, d.c_str()) / 100.f;
     g_eyeFwd = (int)GetPrivateProfileIntA("vr", "eye_forward", 12, d.c_str()) / 100.f;
     int sm = (int)GetPrivateProfileIntA("vr", "head_smooth", 25, d.c_str()); g_smooth = fmaxf(0.02f, fminf(1.f, sm / 100.f));
@@ -99,8 +108,13 @@ V neckLocal(int ped) {
         Vector3 l = natives::invokeV3(N_GET_OFFSET_FROM_ENTITY_GIVEN_WORLD_COORDS, ped, w.x, w.y, w.z);
         if (fabsf(l.x) < 1.5f && fabsf(l.y) < 1.5f && fabsf(l.z) < 2.f) cur = {l.x, l.y, l.z};
     }
+    float k = g_smooth;
+    if (g_onFoot && !g_headBob) {
+        // steady on-foot camera: sideways sway ignored, forward lean limited, height follows only slowly (crouch, stairs)
+        cur.x = 0.f; cur.y = fmaxf(-0.04f, fminf(0.10f, cur.y)); k = 0.03f;
+    }
     if (!g_neckSet) { g_neckSm = cur; g_neckSet = true; }
-    else { g_neckSm.x += (cur.x - g_neckSm.x) * g_smooth; g_neckSm.y += (cur.y - g_neckSm.y) * g_smooth; g_neckSm.z += (cur.z - g_neckSm.z) * g_smooth; }
+    else { g_neckSm.x += (cur.x - g_neckSm.x) * k; g_neckSm.y += (cur.y - g_neckSm.y) * k; g_neckSm.z += (cur.z - g_neckSm.z) * k; }
     return g_neckSm;
 }
 
@@ -108,6 +122,7 @@ V neckLocal(int ped) {
 // Returns the eye position in world space (anchor for arms and aiming).
 V headCamera(int ped, const VrState& s, float yaw, bool inVehicle) {
     readCamIni();
+    g_onFoot = !inVehicle;
     XrPoseF3 e = xr::removeRoll(s.stereo ? s.eye[s.renderEye] : s.head);
     V gf = xrToGta(qrot(e, {0,0,-1}), yaw);
     float camYaw = atan2f(-gf.x, gf.y) * 57.29578f;
@@ -315,6 +330,19 @@ void snapTurn(const VrState& s, float dt) {
     if (!g_turnLatch && fabsf(x) > 0.7f) { float d = (x > 0 ? g_snapAngle : -g_snapAngle); g_baseYaw -= d; g_vehYawOff -= d; g_turnLatch = true; }
     if (fabsf(x) < 0.3f) g_turnLatch = false;
 }
+// 0.5.3: comfort vignette strength from the sticks (walking, smooth turning); rises fast, fades slowly
+void comfortVignette(const VrState& s, bool inVehicle, float dt) {
+    float mv = inVehicle ? 0.f : fmaxf(fabsf(s.value[IN_MOVE_X]), fabsf(s.value[IN_MOVE_Y]));
+    float tn = (g_turnMode == 0) ? fabsf(s.value[IN_TURN_X]) : 0.f;
+    float want = 0.f;
+    if (mv > kDeadzone) want = fmaxf(want, 0.6f + 0.4f * (mv - kDeadzone) / (1.f - kDeadzone));
+    if (tn > 0.2f) want = 1.f;
+    want *= g_vigMax;
+    float rate = want > g_vigCur ? 4.f : 1.5f;   // per second
+    float st = rate * dt;
+    if (fabsf(want - g_vigCur) <= st) g_vigCur = want; else g_vigCur += (want > g_vigCur ? st : -st);
+    blit::setVignette(g_vigCur, g_vigInner);
+}
 float wrap180(float a) { while (a > 180.f) a -= 360.f; while (a < -180.f) a += 360.f; return a; }
 // 0.4.9: the character turns after the view on foot. Once the view is more than body_deadzone degrees away from where
 // the body faces, the body turns (body_speed deg/s) until it faces the view again. While walking GTA turns the body
@@ -468,6 +496,7 @@ void minimapSource() {
     }
 }
 void releaseCamera() {
+    g_vigCur = 0.f; blit::setVignette(0.f, g_vigInner);
     g_radarChecked = false;
     showHead();
     g_neckPed = 0; g_camMode = 0;
@@ -506,6 +535,7 @@ void tick() {
     float yaw = frameYaw(ped, s);
     V anchor = headCamera(ped, s, yaw, inVehicle);
     bodyFollow(ped, s, inVehicle, dt);
+    comfortVignette(s, inVehicle, dt);
     minimapSource();
     armFollow(ped, s, inVehicle, yaw, anchor);
     { const XrPoseF3* g[2] = {&s.pose[IN_LEFT_GRIP_POSE], &s.pose[IN_RIGHT_GRIP_POSE]}; hands::tick(ped, g, yaw); }
