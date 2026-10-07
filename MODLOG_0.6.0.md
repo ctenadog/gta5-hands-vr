@@ -15,4 +15,4 @@ Installer
 - Zip now contains only: GTA5VR.asi, GTA5VR_Host.exe, openxr_loader.dll, setup.bat, uninstall.bat, README_RU.txt, licenses/.
   Removed: xrtest.exe, install.bat, install.ps1, GTA5VR-README.txt. Zip renamed GTA5VR-0.6.0.zip.
 - Release assets: zip, setup.bat, uninstall.bat (xrtest.exe removed).
-- README.md and README_RU.txt rewritten short.
+- README.md and README_RU.txt rewritten short. Repo: install.bat, install.ps1, GTA5VR-README.txt deleted; build.sh now just runs ci/build.sh.
